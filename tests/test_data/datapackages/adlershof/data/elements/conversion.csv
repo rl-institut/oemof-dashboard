@@ -1,0 +1,8 @@
+region;name;type;carrier;tech;from_bus;to_bus;capacity;capacity_cost;efficiency;carrier_cost;marginal_cost;expandable;capacity_potential;output_parameters
+;heat_central-gas_boiler;conversion;;;gas;heat_central;0.0;12727.118044693523;0.92;0.0;10.582;true;;{}
+;heat_decentral-gas_boiler;conversion;;;gas;heat_decentral;0.0;21236.992536149173;0.99;0.0;1e-06;true;;{}
+;pth;conversion;;;electricity;heat_central;0.0;10000.0;0.8;0.0;0.79;true;;{}
+;cool_process-absorption;conversion;;;electricity;cool_process;0.0;10000.0;0.8;0.0;0.23;true;;{}
+;cool_process-compression;conversion;;;electricity;cool_process;0.0;50568.1942003255;4.16;0.0;1.6;true;;{}
+;cool_space-compression;conversion;;;electricity;cool_space;0.0;10000.0;0.8;0.0;1.6;true;;{}
+;aquifer-heat_exchanger;conversion;;;heat_central;aquifer;0.0;10000.0;0.8;;0.0;true;;{}

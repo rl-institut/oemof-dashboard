@@ -1,0 +1,1933 @@
+{
+  "name": "adlershof_2050",
+  "resources": [
+    {
+      "name": "heatpumps",
+      "type": "table",
+      "description": "Derived from component: heatpump",
+      "path": "data/elements/heatpumps.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "from_bus",
+            "type": "string",
+            "description": "The input bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "to_bus",
+            "type": "string",
+            "description": "The output bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "low_temperature_potential",
+            "type": "string",
+            "description": "Limit output flow by low temperature potential per hour",
+            "custom": {
+              "unit": "MWh"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Installed capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "capacity_cost",
+            "type": "number",
+            "description": "Annualized costs of capacity expansion",
+            "custom": {
+              "unit": "Eur/MW"
+            }
+          },
+          {
+            "name": "efficiency",
+            "type": "string",
+            "description": "Efficiency of the conversion biomass to electricity",
+            "custom": {
+              "unit": "unitless"
+            }
+          },
+          {
+            "name": "carrier_cost",
+            "type": "number",
+            "description": "Cost per unit of used fuel",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "expandable",
+            "type": "boolean",
+            "description": "Capacity can be expanded",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity_potential",
+            "type": "number",
+            "description": "Maximum invest capacity in unit of output capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "from_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "to_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "efficiency",
+            "reference": {
+              "fields": "",
+              "resource": "heatpumps_profile"
+            }
+          },
+          {
+            "fields": "low_temperature_potential",
+            "reference": {
+              "fields": "",
+              "resource": "heatpumps_profile"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "flh_heatpumps",
+      "type": "table",
+      "description": "Derived from component: flh_heatpump",
+      "path": "data/elements/flh_heatpumps.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "from_bus",
+            "type": "string",
+            "description": "The input bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "to_bus",
+            "type": "string",
+            "description": "The output bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "full_load_time_max",
+            "type": "number",
+            "description": "Limit output flow by max outflow",
+            "custom": {
+              "unit": "MWh"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Installed capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "capacity_cost",
+            "type": "number",
+            "description": "Annualized costs of capacity expansion",
+            "custom": {
+              "unit": "Eur/MW"
+            }
+          },
+          {
+            "name": "efficiency",
+            "type": "string",
+            "description": "Efficiency of the conversion biomass to electricity",
+            "custom": {
+              "unit": "unitless"
+            }
+          },
+          {
+            "name": "carrier_cost",
+            "type": "number",
+            "description": "Cost per unit of used fuel",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "expandable",
+            "type": "boolean",
+            "description": "Capacity can be expanded",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity_potential",
+            "type": "number",
+            "description": "Maximum invest capacity in unit of output capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "from_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "to_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "efficiency",
+            "reference": {
+              "fields": "",
+              "resource": "flh_heatpumps_profile"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "aquifer_heatpump",
+      "type": "table",
+      "description": "Derived from component: aquifer_heatpump",
+      "path": "data/elements/aquifer_heatpump.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "electricity_bus",
+            "type": "string",
+            "description": "The input bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "aquifer_bus",
+            "type": "string",
+            "description": "The aquifer bus input this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "heat_bus",
+            "type": "string",
+            "description": "The output bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "cop",
+            "type": "number",
+            "description": "The output bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Installed capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "capacity_cost",
+            "type": "number",
+            "description": "Annualized costs of capacity expansion",
+            "custom": {
+              "unit": "Eur/MW"
+            }
+          },
+          {
+            "name": "carrier_cost",
+            "type": "number",
+            "description": "Cost per unit of used fuel",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "expandable",
+            "type": "boolean",
+            "description": "Capacity can be expanded",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity_potential",
+            "type": "string",
+            "description": "Maximum invest capacity in unit of output capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "electricity_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "aquifer_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "heat_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "capacity_potential",
+            "reference": {
+              "fields": "",
+              "resource": "aquifer_heatpump_profile"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "volatile",
+      "type": "table",
+      "description": "Derived from component: volatile",
+      "path": "data/elements/volatile.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "bus",
+            "type": "string",
+            "description": "The bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Installed capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "capacity_cost",
+            "type": "number",
+            "description": "Annualized costs of capacity expansion",
+            "custom": {
+              "unit": "Eur/MW"
+            }
+          },
+          {
+            "name": "expandable",
+            "type": "boolean",
+            "description": "Capacity can be expanded",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity_potential",
+            "type": "number",
+            "description": "Max install capacity if investment",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "profile",
+            "type": "string",
+            "description": "Name of the profile",
+            "custom": {
+              "unit": ""
+            }
+          },
+          {
+            "name": "output_parameters",
+            "type": "object",
+            "description": "Optional parameters passed to oemof-solph's output flow",
+            "custom": {
+              "unit": "n/a"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "profile",
+            "reference": {
+              "fields": "",
+              "resource": "volatile_profile"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "storages",
+      "type": "table",
+      "description": "Derived from component: storage",
+      "path": "data/elements/storages.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "bus",
+            "type": "string",
+            "description": "The bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Installed capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "storage_capacity",
+            "type": "number",
+            "description": "Installed storage capacity",
+            "custom": {
+              "unit": "MWh"
+            }
+          },
+          {
+            "name": "efficiency",
+            "type": "number",
+            "description": "Efficiency of charging/discharging",
+            "custom": {
+              "unit": "unitless"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost of charging/discharging",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "loss_rate",
+            "type": "number",
+            "description": "Losses due to self discharging",
+            "custom": {
+              "unit": "unitless"
+            }
+          },
+          {
+            "name": "expandable",
+            "type": "boolean",
+            "description": "Capacity can be expanded",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity_potential",
+            "type": "number",
+            "description": "Potential of the investment for capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "storage_capacity_potential",
+            "type": "number",
+            "description": "Potential of the investment for storage capacity",
+            "custom": {
+              "unit": "MWh"
+            }
+          },
+          {
+            "name": "capacity_cost",
+            "type": "number",
+            "description": "Annualized investment cost per charging/discharging capacity",
+            "custom": {
+              "unit": "Eur/MW"
+            }
+          },
+          {
+            "name": "storage_capacity_cost",
+            "type": "number",
+            "description": "Annualized investment cost per storage capacity",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "input_parameters",
+            "type": "object",
+            "description": "Optional parameters passed to oemof-solph's input flow",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "output_parameters",
+            "type": "object",
+            "description": "Optional parameters passed to oemof-solph's output flow ",
+            "custom": {
+              "unit": "n/a"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "conversion",
+      "type": "table",
+      "description": "Derived from component: conversion",
+      "path": "data/elements/conversion.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "from_bus",
+            "type": "string",
+            "description": "The input bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "to_bus",
+            "type": "string",
+            "description": "The output bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Installed capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "capacity_cost",
+            "type": "number",
+            "description": "Annualized costs of capacity expansion",
+            "custom": {
+              "unit": "Eur/MW"
+            }
+          },
+          {
+            "name": "efficiency",
+            "type": "number",
+            "description": "Efficiency of the conversion biomass to electricity",
+            "custom": {
+              "unit": "unitless"
+            }
+          },
+          {
+            "name": "carrier_cost",
+            "type": "number",
+            "description": "Cost per unit of used fuel",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "expandable",
+            "type": "boolean",
+            "description": "Capacity can be expanded",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity_potential",
+            "type": "number",
+            "description": "Maximum invest capacity in unit of output capacity",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "output_parameters",
+            "type": "object",
+            "description": "Optional parameters passed to oemof-solph's output flow",
+            "custom": {
+              "unit": "n/a"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "from_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "to_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "backpressures",
+      "type": "table",
+      "description": "Derived from component: backpressure",
+      "path": "data/elements/backpressures.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier of input flow",
+            "custom": {
+              "unit": ""
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": ""
+            }
+          },
+          {
+            "name": "fuel_bus",
+            "type": "string",
+            "description": "The bus that supports the fuel for the CHP",
+            "custom": {
+              "unit": ""
+            }
+          },
+          {
+            "name": "electricity_bus",
+            "type": "string",
+            "description": "The bus for electricity output",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "heat_bus",
+            "type": "string",
+            "description": "The bus for heat output",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Installed electric capacity in full extraction mode",
+            "custom": {
+              "unit": "MW_el"
+            }
+          },
+          {
+            "name": "electric_efficiency",
+            "type": "number",
+            "description": "Electrical efficiency of the chp unit",
+            "custom": {
+              "unit": ""
+            }
+          },
+          {
+            "name": "thermal_efficiency",
+            "type": "number",
+            "description": "Thermal efficiency of the chp unit",
+            "custom": {
+              "unit": ""
+            }
+          },
+          {
+            "name": "expandable",
+            "type": "boolean",
+            "description": "Capacity can be expanded",
+            "custom": {
+              "unit": ""
+            }
+          },
+          {
+            "name": "capacity_cost",
+            "type": "number",
+            "description": "Annualized costs of capacity expansion",
+            "custom": {
+              "unit": "Eur/MW"
+            }
+          },
+          {
+            "name": "carrier_cost",
+            "type": "number",
+            "description": "Cost per unit of used fuel",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost per unit of produced electrical output",
+            "custom": {
+              "unit": "Eur/MWh_el"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "fuel_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "electricity_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "heat_bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "demands",
+      "type": "table",
+      "description": "Derived from component: load",
+      "path": "data/elements/demands.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "bus",
+            "type": "string",
+            "description": "The bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "amount",
+            "type": "number",
+            "description": "Total load over one year",
+            "custom": {
+              "unit": "GWh/a"
+            }
+          },
+          {
+            "name": "profile",
+            "type": "string",
+            "description": "Name of the profile",
+            "custom": {
+              "unit": "n/a"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          },
+          {
+            "fields": "profile",
+            "reference": {
+              "fields": "",
+              "resource": "demands_profile"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "imports",
+      "type": "table",
+      "description": "Derived from component: shortage",
+      "path": "data/elements/imports.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "bus",
+            "type": "string",
+            "description": "The bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Maximum allowed shortage which is unlimited if left empty and invest applies",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "output_parameters",
+            "type": "object",
+            "description": "Optional parameters passed to oemof-solph's output flow",
+            "custom": {
+              "unit": "n/a"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "exports",
+      "type": "table",
+      "description": "Derived from component: excess",
+      "path": "data/elements/exports.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "bus",
+            "type": "string",
+            "description": "The bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Maximum allowed excess which is unlimited if left empty",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "input_parameters",
+            "type": "object",
+            "description": "Optional parameters passed to oemof-solph's input flow",
+            "custom": {
+              "unit": "n/a"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "shortages",
+      "type": "table",
+      "description": "Derived from component: shortage",
+      "path": "data/elements/shortages.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "bus",
+            "type": "string",
+            "description": "The bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Maximum allowed shortage which is unlimited if left empty and invest applies",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "output_parameters",
+            "type": "object",
+            "description": "Optional parameters passed to oemof-solph's output flow",
+            "custom": {
+              "unit": "n/a"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "excesses",
+      "type": "table",
+      "description": "Derived from component: excess",
+      "path": "data/elements/excesses.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "carrier",
+            "type": "string",
+            "description": "Energy carrier",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "tech",
+            "type": "string",
+            "description": "Technology",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "bus",
+            "type": "string",
+            "description": "The bus this component is connected to",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "capacity",
+            "type": "number",
+            "description": "Maximum allowed excess which is unlimited if left empty",
+            "custom": {
+              "unit": "MW"
+            }
+          },
+          {
+            "name": "marginal_cost",
+            "type": "number",
+            "description": "Marginal cost",
+            "custom": {
+              "unit": "Eur/MWh"
+            }
+          },
+          {
+            "name": "input_parameters",
+            "type": "object",
+            "description": "Optional parameters passed to oemof-solph's input flow",
+            "custom": {
+              "unit": "n/a"
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": [
+          {
+            "fields": "bus",
+            "reference": {
+              "fields": "name",
+              "resource": "bus"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "heatpumps_profile",
+      "type": "table",
+      "description": "Profiles",
+      "path": "data/sequences/heatpumps_profile.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "timeindex",
+            "type": "datetime",
+            "description": "Current timestep",
+            "format": "%Y-%m-%d %H:%M:%S",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_air-efficiency",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_air-low_temperature_potential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_mt-efficiency",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_mt-low_temperature_potential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_nt-efficiency",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_nt-low_temperature_potential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_office-efficiency",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_office-low_temperature_potential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          }
+        ],
+        "primaryKey": [
+          "timeindex"
+        ],
+        "foreignKeys": []
+      }
+    },
+    {
+      "name": "flh_heatpumps_profile",
+      "type": "table",
+      "description": "Profiles",
+      "path": "data/sequences/flh_heatpumps_profile.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "timeindex",
+            "type": "datetime",
+            "description": "Current timestep",
+            "format": "%Y-%m-%d %H:%M:%S",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_canal-efficiency",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_wastewater-efficiency",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          }
+        ],
+        "primaryKey": [
+          "timeindex"
+        ],
+        "foreignKeys": []
+      }
+    },
+    {
+      "name": "aquifer_heatpump_profile",
+      "type": "table",
+      "description": "Profiles",
+      "path": "data/sequences/aquifer_heatpump_profile.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "timeindex",
+            "type": "datetime",
+            "description": "Current timestep",
+            "format": "%Y-%m-%d %H:%M:%S",
+            "unit": "n/a"
+          },
+          {
+            "name": "heatpump_aquifer-capacity_potential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          }
+        ],
+        "primaryKey": [
+          "timeindex"
+        ],
+        "foreignKeys": []
+      }
+    },
+    {
+      "name": "volatile_profile",
+      "type": "table",
+      "description": "Profiles",
+      "path": "data/sequences/volatile_profile.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "timeindex",
+            "type": "datetime",
+            "description": "Current timestep",
+            "format": "%Y-%m-%d %H:%M:%S",
+            "unit": "n/a"
+          },
+          {
+            "name": "heat_decentral-solarthermal-profile",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heat_lt_central-solarthermal-profile",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "pv_facade-profile",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "pv_roof-profile",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "wind-profile",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          }
+        ],
+        "primaryKey": [
+          "timeindex"
+        ],
+        "foreignKeys": []
+      }
+    },
+    {
+      "name": "demands_profile",
+      "type": "table",
+      "description": "Profiles",
+      "path": "data/sequences/demands_profile.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "timeindex",
+            "type": "datetime",
+            "description": "Current timestep",
+            "format": "%Y-%m-%d %H:%M:%S",
+            "unit": "n/a"
+          },
+          {
+            "name": "cool_process-non_residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "cool_space-non_residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "cool_space-residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "electricity-non_residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "electricity-residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heat_central-non_residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heat_central-residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heat_decentral-non_residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heat_decentral-residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "heat_lt_central-residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "mobility-non_residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          },
+          {
+            "name": "mobility-residential",
+            "type": "number",
+            "description": "Value for current timestep",
+            "unit": "n/a"
+          }
+        ],
+        "primaryKey": [
+          "timeindex"
+        ],
+        "foreignKeys": []
+      }
+    },
+    {
+      "name": "bus",
+      "type": "table",
+      "description": "Derived from component: bus",
+      "path": "data/elements/bus.csv",
+      "scheme": "file",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "description": "Country code",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Name of the bus. Can be referred by other components.",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Type",
+            "custom": {
+              "unit": "n/a"
+            }
+          },
+          {
+            "name": "balanced",
+            "type": "boolean",
+            "description": "Whether bus is balanced or not",
+            "custom": {
+              "unit": ""
+            }
+          }
+        ],
+        "primaryKey": [
+          "name"
+        ],
+        "foreignKeys": []
+      }
+    }
+  ]
+}

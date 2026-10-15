@@ -1,0 +1,6 @@
+region;name;type;carrier;tech;bus;capacity;capacity_cost;expandable;capacity_potential;marginal_cost;profile;output_parameters
+;pv_roof;volatile;;;electricity;0.0;53771.889024585784;true;75.23;0.0;pv_roof-profile;{}
+;pv_facade;volatile;;;electricity;0.0;233821.9642553436;true;7.9;0.0;pv_facade-profile;{}
+;wind;volatile;;;electricity;0.0;255878.17839715676;true;2.74;0.0;wind-profile;{}
+;heat_lt_central-solarthermal;volatile;;;heat_lt_central;0.0;32.017179886534834;true;33.39;0.0;heat_lt_central-solarthermal-profile;{}
+;heat_decentral-solarthermal;volatile;;;heat_decentral;0.0;60891.94412737059;true;654.55;0.0;heat_decentral-solarthermal-profile;{}

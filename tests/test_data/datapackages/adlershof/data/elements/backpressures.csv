@@ -1,0 +1,2 @@
+region;name;type;carrier;tech;fuel_bus;electricity_bus;heat_bus;capacity;electric_efficiency;thermal_efficiency;expandable;capacity_cost;carrier_cost;marginal_cost
+;bhkw;backpressure;;;gas;electricity;heat_central;0.0;0.38;0.54;true;130.85314468658962;0.0;0.0

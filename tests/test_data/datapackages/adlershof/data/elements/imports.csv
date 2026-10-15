@@ -1,0 +1,4 @@
+region;name;type;carrier;tech;bus;capacity;marginal_cost;output_parameters
+;electricity-import;shortage;;;electricity;1000000000;133.0;{}
+;gas-import;shortage;;;gas;1000000000;184.0;{}
+;heat_central-import;shortage;;;heat_central;1000000000;191.0;{}

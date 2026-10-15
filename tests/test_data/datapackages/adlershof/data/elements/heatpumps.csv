@@ -1,0 +1,5 @@
+region;name;type;carrier;tech;from_bus;to_bus;low_temperature_potential;capacity;capacity_cost;efficiency;carrier_cost;marginal_cost;expandable;capacity_potential
+;heatpump_mt;heatpump;;;electricity;heat_central;heatpump_mt-low_temperature_potential;0.0;58971.64687994458;heatpump_mt-efficiency;0.0;0.0;true;43.03
+;heatpump_office;heatpump;;;electricity;heat_central;heatpump_office-low_temperature_potential;0.0;59218.46299648637;heatpump_office-efficiency;0.0;0.0;true;5.97
+;heatpump_nt;heatpump;;;electricity;heat_central;heatpump_nt-low_temperature_potential;0.0;59218.46299648637;heatpump_nt-efficiency;0.0;0.0;true;14.95
+;heatpump_air;heatpump;;;electricity;heat_decentral;heatpump_air-low_temperature_potential;0.0;173888.831269025;heatpump_air-efficiency;0.0;0.0;true;

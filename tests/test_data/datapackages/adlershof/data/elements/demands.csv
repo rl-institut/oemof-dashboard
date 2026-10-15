@@ -1,0 +1,13 @@
+region;name;type;carrier;tech;bus;amount;profile
+;electricity-residential-demand;load;;;electricity;7765.416159361601;electricity-residential
+;electricity-non_residential-demand;load;;;electricity;343037.93037858646;electricity-non_residential
+;mobility-residential-demand;load;;;electricity;2454.913971562475;mobility-residential
+;mobility-non_residential-demand;load;;;electricity;182145.0952441986;mobility-non_residential
+;heat_central-residential-demand;load;;;heat_central;9551.492600678226;heat_central-residential
+;heat_central-non_residential-demand;load;;;heat_central;443066.57128973765;heat_central-non_residential
+;heat_lt_central-residential-demand;load;;;heat_lt_central;11549.849807065026;heat_lt_central-residential
+;heat_decentral-residential-demand;load;;;heat_decentral;4950.81590910325;heat_decentral-residential
+;heat_decentral-non_residential-demand;load;;;heat_decentral;77829.08850830242;heat_decentral-non_residential
+;cool_process-non_residential-demand;load;;;cool_process;44929.34376360332;cool_process-non_residential
+;cool_space-residential-demand;load;;;cool_space;10174.907673441812;cool_space-residential
+;cool_space-non_residential-demand;load;;;cool_space;207929.07104860203;cool_space-non_residential

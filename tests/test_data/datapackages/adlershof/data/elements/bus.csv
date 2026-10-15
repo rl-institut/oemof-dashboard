@@ -1,0 +1,9 @@
+region;name;type;balanced
+;electricity;bus;True
+;heat_central;bus;True
+;heat_decentral;bus;True
+;aquifer;bus;True
+;heat_lt_central;bus;True
+;gas;bus;True
+;cool_process;bus;True
+;cool_space;bus;True

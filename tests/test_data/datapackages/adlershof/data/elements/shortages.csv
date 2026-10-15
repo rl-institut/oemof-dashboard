@@ -1,0 +1,9 @@
+region;name;type;carrier;tech;bus;capacity;marginal_cost;output_parameters
+;electricity-shortage;shortage;;;electricity;1000000000;1000000000;{}
+;gas-shortage;shortage;;;gas;1000000000;1000000000;{}
+;heat_central-shortage;shortage;;;heat_central;1000000000;1000000000;{}
+;heat_decentral-shortage;shortage;;;heat_decentral;1000000000;1000000000;{}
+;heat_lt_central-shortage;shortage;;;heat_lt_central;1000000000;1000000000;{}
+;cool_process-shortage;shortage;;;cool_process;1000000000;1000000000;{}
+;cool_space-shortage;shortage;;;cool_space;1000000000;1000000000;{}
+;aquifer-shortage;shortage;;;aquifer;1000000000;1000000000;{}

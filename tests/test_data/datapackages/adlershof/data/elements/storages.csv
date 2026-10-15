@@ -1,0 +1,6 @@
+region;name;type;carrier;tech;bus;capacity;storage_capacity;efficiency;marginal_cost;loss_rate;expandable;capacity_potential;storage_capacity_potential;capacity_cost;storage_capacity_cost;input_parameters;output_parameters
+;battery_small;storage;;;electricity;0.0;0.0;0.8;0.0;0.1;true;;;10000.0;77750.52431161744;{};{}
+;battery_large;storage;;;electricity;0.0;0.0;0.8;1.701;4.17e-05;true;;;10000.0;21569.971524504297;{};{}
+;storage_aquifer;storage;;;aquifer;0.0;0.0;0.8;0.0;5e-05;true;;30000.0;10000.0;;{};{}
+;storage_pressure;storage;;;heat_central;0.0;0.0;0.8;0.0;7.7e-05;true;;;10000.0;;{};{}
+;storage_buffer;storage;;;heat_decentral;0.0;0.0;0.8;1.23;0.021;true;;;10000.0;;{};{}

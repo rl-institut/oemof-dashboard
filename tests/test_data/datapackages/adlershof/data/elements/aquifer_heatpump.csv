@@ -1,0 +1,2 @@
+region;name;type;carrier;tech;electricity_bus;aquifer_bus;heat_bus;cop;capacity;capacity_cost;carrier_cost;marginal_cost;expandable;capacity_potential
+;heatpump_aquifer;aquifer_heatpump;;;electricity;aquifer;heat_central;3.0;12.0;60000.0;0.0;0.0;true;
