@@ -28,6 +28,7 @@ A handoff-ready spec (with locked architecture decisions) for a local, single-us
 - [Energy system model from a Datapackage](issues/03-energy-system-model.md): Connections from bus `foreignKeys` only, undirected; Input Sequences via sequence `foreignKeys`; Flow direction only from Results; Outcome = Result × Result Entry (stem) × variable, split only against a selected Datapackage; mismatches listed, never guessed.
 - [Outcome selection and comparison](issues/04-outcome-selection.md): one picker (graph pre-filters); chart = Entry×variable list × global Result Selection; Input Sequences mixable in sequence charts, scalars separate; one y-axis, real timestamps, 8761st row kept; missing → "(missing)" legend entry.
 - [Chart set and Dashboard file](issues/05-charts-and-dashboard-file.md): kinds sequence (line/stacked area/duration curve) · scalar (bar) · system (Sankey, Σ flow, needs Datapackage); color = Entry×variable with optional per-chart override, Result via dash/subplot/group; file = version 1 + ordered charts (half/full) + Result Selection/Datapackage as non-binding defaults.
+- [UI layout and navigation prototype](issues/06-ui-layout-prototype.md): variant A Explorer, three panes (selectors+picker · resizable graph over chart grid · combined Component inspector); graph click → inspector + picker filter, chart chips → back to node; series editable per chart after creation.
 
 ## Not yet specified
 
