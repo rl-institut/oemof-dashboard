@@ -29,14 +29,11 @@ A handoff-ready spec (with locked architecture decisions) for a local, single-us
 - [Outcome selection and comparison](issues/04-outcome-selection.md): one picker (graph pre-filters); chart = Entry×variable list × global Result Selection; Input Sequences mixable in sequence charts, scalars separate; one y-axis, real timestamps, 8761st row kept; missing → "(missing)" legend entry.
 - [Chart set and Dashboard file](issues/05-charts-and-dashboard-file.md): kinds sequence (line/stacked area/duration curve) · scalar (bar) · system (Sankey, Σ flow, needs Datapackage); color = Entry×variable with optional per-chart override, Result via dash/subplot/group; file = version 1 + ordered charts (half/full) + Result Selection/Datapackage as non-binding defaults.
 - [UI layout and navigation prototype](issues/06-ui-layout-prototype.md): variant A Explorer, three panes (selectors+picker · resizable graph over chart grid · combined Component inspector); graph click → inspector + picker filter, chart chips → back to node; series editable per chart after creation.
+- [Packaging, launch and data discovery](issues/07-packaging-and-discovery.md): `oemof-dashboard [ROOT] [--datapackages DIR] [--results DIR]` (defaults `ROOT/datapackages`, `ROOT/results`); subfolders discovered by marker files, rescanned on page load, parsed lazily + cached; deps dash, dash-cytoscape, pandas; Python ≥3.12; pure readers `datapackage.py`/`result.py` apart from `app.py`/`cli.py`.
+- [Bus balance view](issues/08-bus-balance-view.md): system-kind type for one Bus; in above / out below zero from split `flow`s (storage, excess, shortage not special-cased); subplot per Result; residual line only if nonzero; stack order Σ desc; Dashboard stores Bus name.
+- [Error handling for malformed input](issues/09-error-handling.md): load what's usable, skipped items become Input Warnings (selector ⚠ n, inspector list, log); Refused input (unreadable root, duplicate names, nothing usable) stays listed ✖; bad Dashboard file → banner, charts untouched.
 
 ## Not yet specified
-
-- Linking metadata: optional stored link Result → Datapackage beyond pure name matching; note resqdb scenario YAML already holds `datapackage:` (see Result file naming research).
-- Manual graph layout persisted in Dashboard.
-- Derived comparisons (difference to a reference Result) and deferred knobs: per-chart Result override, second y-axis, step alignment of differing time indices.
-- Later chart types (heatmap day×hour) and downsampling if data grows past scale target.
-- Error handling for malformed/partial Datapackages and Results (what to show vs. refuse). Already fixed: Datapackage without `foreignKeys` → unconnected + warning; broken Input Sequence reference; unmatched Result Entries (see Energy system model).
 
 ## Out of scope
 
@@ -44,3 +41,8 @@ A handoff-ready spec (with locked architecture decisions) for a local, single-us
 - Static HTML export / sharing without Python.
 - Multi-user / server deployment.
 - Parameter diff between two Datapackages.
+- Linking metadata (stored link from a Result to its Datapackage, e.g. resqdb scenario YAML `datapackage:`): name matching is enough for this effort.
+- Manual graph layout persisted in the Dashboard: auto-layout is decided; manual layout is an extra on top of it.
+- Derived comparisons and deferred chart options (difference to a reference Result, per-chart Result override, second y-axis, time-index alignment): deliberately deferred in Outcome selection and Chart set.
+- Multi-period Results (scalars with several period columns): files of that shape are skipped with an Input Warning; see [Error handling for malformed input](issues/09-error-handling.md).
+- Heatmap (day×hour) and downsampling: only needed beyond the scale target.

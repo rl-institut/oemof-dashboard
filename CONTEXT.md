@@ -55,5 +55,18 @@ Any Result Scalar or Result Sequence picked for display, addressed as Result × 
 **Result Selection**:
 The set of Results currently compared; every chart shows its Outcomes for each Result in it.
 
+**Bus balance**:
+For one Bus, its incoming Flows against its outgoing Flows over time, per Result.
+
 **Dashboard**:
 A saved, reloadable arrangement of charts.
+
+## Input problems
+
+**Input Warning**:
+A defect found while reading a Datapackage or Result that skips one item (row, resource, file) but keeps the rest of the input usable. Listed with the input, never silently dropped.
+_Avoid_: issue, error
+
+**Refused input**:
+A Datapackage or Result that can't be used at all (root file unreadable, duplicate names, nothing usable left). Stays listed in its selector with the reason, but can't be selected.
+_Avoid_: broken, invalid
