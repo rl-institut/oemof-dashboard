@@ -16,6 +16,7 @@ from oemof_dashboard import datapackage
 from oemof_dashboard.app import create_app, graph_elements, inspector
 from oemof_dashboard.result import Result, read
 
+WIND_PROFILE = "input:adlershof/volatile_profile/wind-profile"
 EXPLORER_IDS = [
     "datapackage",
     "result-selection",
@@ -191,6 +192,7 @@ class Page:
         self.app = app
         self.charts: list[dict] = []
         self.cards: list = []
+        self.datapackage: str | None = "adlershof"
 
     def apply(self, response: dict) -> None:
         """Apply a callback response to the charts store and cards, unless the update was prevented."""
@@ -199,8 +201,17 @@ class Page:
             self.cards = patched(self.cards, response["charts"]["children"])
 
     def states(self) -> dict[str, object]:
-        """States the chart callbacks read: the charts store and a Result Selection of adlershof."""
-        return {"charts-store.data": self.charts, "result-selection.value": ["adlershof"]}
+        """States the chart callbacks read: the charts store, a Result Selection of adlershof and the Datapackage."""
+        return {
+            "charts-store.data": self.charts,
+            "result-selection.value": ["adlershof"],
+            "datapackage.value": self.datapackage,
+        }
+
+    def rerender(self) -> None:
+        """Re-render all cards, as on a change of the Result Selection or Datapackage."""
+        inputs = {"result-selection.value": ["adlershof"], "datapackage.value": self.datapackage}
+        self.cards = fire(self.app, inputs, {"charts-store.data": self.charts})["charts"]["children"]
 
     def trigger(self, inputs: dict[str, list], component_id: dict, prop: str, value: object) -> None:
         """Change one prop of one card control, passing the other pattern-matching inputs of the callback empty."""
@@ -261,12 +272,11 @@ def test_added_chart_is_a_half_width_line_chart_rendered_for_result_selection(pa
 
 def test_result_selection_change_rerenders_stored_charts(page: Page) -> None:
     page.add("bhkw-electricity/flow")
+    page.cards = []
 
-    cards = fire(page.app, {"result-selection.value": ["adlershof"]}, {"charts-store.data": page.charts})["charts"][
-        "children"
-    ]
+    page.rerender()
 
-    assert "bhkw-electricity · flow · adlershof" in json.dumps(cards, ensure_ascii=False)
+    assert "bhkw-electricity · flow · adlershof" in json.dumps(page.cards, ensure_ascii=False)
 
 
 def test_editing_title_width_and_series_updates_chart_and_card(page: Page) -> None:
@@ -370,7 +380,7 @@ def test_rendering_a_card_does_not_count_as_editing_it(page: Page) -> None:
     response = fire(
         page.app,
         {"chart-field": fields, "chart-colour": []},
-        {"charts-store.data": page.charts, "result-selection.value": ["adlershof"]},
+        page.states(),
         changed=[f"{pattern(field['id'])}.value" for field in fields],
     )
 
@@ -555,3 +565,63 @@ def test_inspector_keeps_selected_node_when_result_selection_changes(adlershof_a
     text = rendered(fire(adlershof_app, inputs, states, changed=["result-selection.value"])["inspector"]["children"])
 
     assert "bhkw-electricity · flow" in text
+
+
+@pytest.mark.parametrize(
+    ("name", "selected", "wind_listed"),
+    [
+        ("adlershof", None, True),
+        ("adlershof", [{"id": "wind"}], True),
+        ("adlershof", [{"id": "bhkw"}], False),
+        (None, None, False),
+    ],
+)
+def test_outcome_picker_offers_input_sequences_of_datapackage_and_selected_nodes(
+    adlershof_app: Dash, name: str | None, selected: list | None, wind_listed: bool
+) -> None:
+    inputs = {"result-selection.value": ["adlershof"], "datapackage.value": name, "graph.selectedNodeData": selected}
+
+    options = fire(adlershof_app, inputs)["outcome-picker"]["options"]
+
+    by_value = {option["value"]: option["label"] for option in options}
+    assert (WIND_PROFILE in by_value) is wind_listed
+    if wind_listed:
+        assert by_value[WIND_PROFILE] == "adlershof · volatile_profile · wind-profile"
+
+
+def test_input_sequence_is_added_and_drawn_next_to_result_sequences(page: Page) -> None:
+    page.add("bhkw-electricity/flow", WIND_PROFILE)
+
+    assert page.series() == [[["bhkw-electricity", "flow"], ["adlershof", "volatile_profile", "wind-profile"]]]
+    card = json.dumps(page.cards, ensure_ascii=False)
+    assert '"name": "adlershof · volatile_profile · wind-profile"' in card
+    assert "(missing)" not in card
+    assert WIND_PROFILE in card  # offered and picked in the series multi-select
+
+
+@pytest.mark.parametrize("other", [None, "copy"])
+def test_input_sequence_of_another_datapackage_is_missing(
+    shipped_data: Path, tmp_path: Path, other: str | None
+) -> None:
+    (tmp_path / "datapackages").mkdir()
+    for name in ("adlershof", "copy"):  # same content, different Datapackage
+        (tmp_path / "datapackages" / name).symlink_to(shipped_data / "datapackages" / "adlershof")
+    page = Page(create_app(tmp_path / "datapackages", shipped_data / "results"))
+    page.add(WIND_PROFILE)
+
+    page.datapackage = other
+    page.rerender()
+
+    assert "adlershof · volatile_profile · wind-profile (missing)" in json.dumps(page.cards, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("chart_type", ["stacked_area", "duration_curve"])
+def test_type_switches_within_sequence_kind_keeping_series(page: Page, chart_type: str) -> None:
+    page.add("bhkw-electricity/flow", WIND_PROFILE)
+
+    page.edit("type", 0, chart_type)
+
+    assert page.charts[0]["type"] == chart_type
+    assert len(page.series()[0]) == 2
+    card = json.dumps(page.cards, ensure_ascii=False)
+    assert all(option in card for option in ('"line"', '"stacked_area"', '"duration_curve"'))

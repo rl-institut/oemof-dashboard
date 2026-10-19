@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pandas as pd
+
 DEFAULT_DELIMITER = ";"  # oemof-tabular writes `;` without declaring a dialect
 
 
@@ -46,9 +48,9 @@ def _read_rows(folder: Path, resource: dict) -> list[dict[str, str]]:
         return list(csv.DictReader(file, delimiter=_delimiter(resource)))
 
 
-def _read_header(folder: Path, resource: dict) -> set[str]:
+def _read_header(folder: Path, resource: dict) -> list[str]:
     with (folder / resource["path"]).open(newline="") as file:
-        return set(next(csv.reader(file, delimiter=_delimiter(resource)), []))
+        return next(csv.reader(file, delimiter=_delimiter(resource)), [])
 
 
 def _key_fields(foreign_key: dict) -> list[str]:
@@ -111,7 +113,7 @@ def read(folder: Path) -> Datapackage:
                     continue
                 if column in sequence_fields:
                     sequence = sequence_fields[column]
-                    broken = value not in sequence_columns.get(sequence, set())
+                    broken = value not in sequence_columns.get(sequence, [])
                     parameters[column] = InputSequence(resource=sequence, column=value, broken=broken)
                 else:
                     parameters[column] = _scalar(value)
@@ -126,3 +128,28 @@ def read(folder: Path) -> Datapackage:
     if package.components and not has_bus_keys:
         package.warnings.append("No foreignKeys reference a Bus resource; Components are shown unconnected")
     return package
+
+
+def input_sequence(folder: Path, resource: str, column: str) -> pd.Series | None:
+    """Read the values of one Input Sequence.
+
+    Args:
+        folder: Folder holding `datapackage.json`.
+        resource: Name of the sequence resource.
+        column: Column of that resource.
+
+    Returns:
+        Values on the resource's datetime index, non-numeric values as NaN; None if the resource or column is missing.
+    """
+    # ponytail: re-reads the column on every call; cache like `result.read` if chart rendering gets slow
+    with (folder / "datapackage.json").open() as file:
+        found = [item for item in json.load(file)["resources"] if item["name"] == resource]
+    if not found:
+        return None
+    header = _read_header(folder, found[0])
+    if column not in header[1:]:
+        return None
+    frame = pd.read_csv(
+        folder / found[0]["path"], sep=_delimiter(found[0]), usecols=[header[0], column], index_col=0, parse_dates=True
+    )
+    return pd.to_numeric(frame[column], errors="coerce")

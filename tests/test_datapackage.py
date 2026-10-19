@@ -1,6 +1,8 @@
 import json
+import math
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from oemof_dashboard import datapackage
@@ -136,3 +138,29 @@ def test_connection_to_unknown_bus_skipped_with_warning(tmp_path: Path) -> None:
     assert package.connections == []
     assert len(package.warnings) == 1
     assert "gas" in package.warnings[0]
+
+
+def test_input_sequence_values_on_real_timestamps() -> None:
+    folder = Path(__file__).parent / "test_data" / "datapackages" / "adlershof"
+
+    values = datapackage.input_sequence(folder, "volatile_profile", "wind-profile")
+
+    assert len(values) == 8760
+    assert values.index[0] == pd.Timestamp("2050-01-01 00:00")
+    assert values.iloc[:2].tolist() == [0.0076691, 0.0484804]
+
+
+def test_non_numeric_input_sequence_values_become_gaps(tmp_path: Path) -> None:
+    write_datapackage(tmp_path, {"profiles": ("timeindex;load\n2050-01-01 00:00;1.5\n2050-01-01 01:00;n/a\n", [])})
+
+    values = datapackage.input_sequence(tmp_path, "profiles", "load")
+
+    assert values.iloc[0] == 1.5
+    assert math.isnan(values.iloc[1])
+
+
+@pytest.mark.parametrize(("resource", "column"), [("profiles", "gone"), ("gone", "load")])
+def test_missing_input_sequence_is_none(tmp_path: Path, resource: str, column: str) -> None:
+    write_datapackage(tmp_path, {"profiles": ("timeindex;load\n2050-01-01 00:00;1.5\n", [])})
+
+    assert datapackage.input_sequence(tmp_path, resource, column) is None

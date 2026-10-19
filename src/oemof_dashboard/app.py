@@ -6,11 +6,22 @@ from collections import Counter
 from pathlib import Path
 
 import dash_cytoscape as cyto
+import pandas as pd
 from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
 from oemof_dashboard import datapackage
-from oemof_dashboard.charts import CHART_TYPES, PALETTE, Chart, auto_title, chart_figure, webgl_warning
+from oemof_dashboard.charts import (
+    CHART_TYPES,
+    PALETTE,
+    Chart,
+    auto_title,
+    chart_figure,
+    series_item,
+    series_key,
+    series_label,
+    webgl_warning,
+)
 from oemof_dashboard.cli import discover_datapackages, discover_results
 from oemof_dashboard.matching import Matching, match
 from oemof_dashboard.result import Result, read, sequence_outcomes
@@ -84,6 +95,28 @@ def graph_elements(package: datapackage.Datapackage, result: Result | None) -> l
         if frozenset((component, bus)) not in flowing
     ]
     return nodes + flows + connections
+
+
+def input_sequence_items(
+    name: str, package: datapackage.Datapackage, nodes: set[str] | None = None
+) -> set[tuple[str, str, str]]:
+    """Input Sequences referenced by a Datapackage's Parameters, broken references left out.
+
+    Args:
+        name: Name of the Datapackage.
+        package: The Datapackage.
+        nodes: Only Input Sequences of these Buses or Components; all if None.
+
+    Returns:
+        Input Sequences as (Datapackage, resource, column).
+    """
+    return {
+        (name, value.resource, value.column)
+        for node in (package.buses | package.components).values()
+        if nodes is None or node.name in nodes
+        for value in node.parameters.values()
+        if isinstance(value, datapackage.InputSequence) and not value.broken
+    }
 
 
 def node_link(name: str) -> html.Button:
@@ -172,22 +205,30 @@ def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Re
     ]
 
 
-def chart_card(chart: Chart, results: dict[str, Result]) -> html.Div:
+def chart_card(
+    chart: Chart,
+    results: dict[str, Result],
+    input_items: set[tuple[str, str, str]],
+    inputs: dict[tuple[str, str, str], pd.Series],
+) -> html.Div:
     """Chart card: controls for title, type, width, order and removal; series multi-select; colour overrides; figure.
 
     Args:
         chart: Chart config.
         results: Result Selection as Result name → Result.
+        input_items: Input Sequences of the selected Datapackage, offered as series.
+        inputs: Loaded Input Sequences of the chart by (Datapackage, resource, column).
 
     Returns:
         Card whose controls carry pattern-matching ids keyed by the chart id.
     """
     chart_id = chart["id"]
-    picked = [f"{entry}/{variable}" for entry, variable in chart["series"]]
+    picked = [series_key(item) for item in chart["series"]]
     # ponytail: sequence kind only until scalar charts arrive; then pick the outcomes by chart["kind"]
-    outcomes = {f"{entry}/{variable}" for result in results.values() for entry, variable in sequence_outcomes(result)}
-    options = [{"label": item.replace("/", " · ", 1), "value": item} for item in sorted(outcomes | set(picked))]
-    figure, notices = chart_figure(chart, results)
+    outcomes = {series_key(item) for result in results.values() for item in sequence_outcomes(result)}
+    offered = outcomes | {series_key(item) for item in input_items} | set(picked)
+    options = [{"label": series_label(series_item(key)), "value": key} for key in sorted(offered)]
+    figure, notices = chart_figure(chart, results, inputs)
 
     def field(name: str) -> dict:
         return {"type": "chart-field", "field": name, "chart": chart_id}
@@ -233,7 +274,7 @@ def chart_card(chart: Chart, results: dict[str, Result]) -> html.Div:
                 children=[
                     html.Label(
                         [
-                            item.replace("/", " · ", 1),
+                            series_label(series_item(item)),
                             dcc.Input(
                                 id={"type": "chart-colour", "chart": chart_id, "series": item},
                                 value=chart["colours"].get(item, ""),
@@ -337,6 +378,17 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         # Parsed lazily on selection; `read` re-uses the parse until a Result file changes.
         return {name: read(results / name) for name in selection or []}
 
+    def chart_cards(charts: list[Chart], selection: list[str] | None, name: str | None) -> list[html.Div]:
+        # Only Input Sequences referenced (unbroken) in the selected Datapackage are loaded; any other, e.g. of
+        # another Datapackage, shows as missing.
+        selected = read_selection(selection)
+        package = datapackage.read(datapackages / name) if name else None
+        input_items = input_sequence_items(name, package) if package else set()
+        wanted = {tuple(item) for chart in charts for item in chart["series"] if tuple(item) in input_items}
+        loaded = {item: datapackage.input_sequence(datapackages / name, *item[1:]) for item in wanted}
+        inputs = {item: values for item, values in loaded.items() if values is not None}
+        return [chart_card(chart, selected, input_items, inputs) for chart in charts]
+
     def selected_node_names(name: str | None, selected_nodes: list[dict] | None) -> set[str]:
         # Cytoscape may keep a selection from the previous Datapackage; drop names it doesn't have.
         if not name or not selected_nodes:
@@ -361,17 +413,19 @@ def create_app(datapackages: Path, results: Path) -> Dash:
     def list_outcomes(
         selection: list[str] | None, name: str | None, selected_nodes: list[dict] | None
     ) -> list[dict[str, str]]:
-        # ponytail: Result Sequences only while the line chart is the only chart; scalars arrive with the bar chart
+        # ponytail: Result Sequences only while sequence charts are the only charts; scalars arrive with the bar chart
         selected = read_selection(selection)
         outcomes = set().union(*map(sequence_outcomes, selected.values()))
         nodes = selected_node_names(name, selected_nodes)
-        if nodes:
+        inputs: set[tuple[str, str, str]] = set()
+        if name:
             package = datapackage.read(datapackages / name)
+            inputs = input_sequence_items(name, package, nodes or None)
+        if nodes:
             entries = set().union(*(match(result, package).entries_of(nodes) for result in selected.values()))
             outcomes = {(entry, variable) for entry, variable in outcomes if entry in entries}
-        # Result Entry names come from file names, so they never contain "/".
         return [
-            {"label": f"{entry} · {variable}", "value": f"{entry}/{variable}"} for entry, variable in sorted(outcomes)
+            {"label": series_label(item), "value": series_key(item)} for item in [*sorted(outcomes), *sorted(inputs)]
         ]
 
     @app.callback(
@@ -442,6 +496,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         State("outcome-picker", "value"),
         State("charts-store", "data"),
         State("result-selection", "value"),
+        State("datapackage", "value"),
         prevent_initial_call=True,
     )
     def add_chart(
@@ -450,6 +505,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         picked: list[str] | None,
         _charts: list[Chart],
         selection: list[str] | None,
+        name: str | None,
     ) -> tuple:
         if isinstance(ctx.triggered_id, dict):
             if not ctx.triggered[0]["value"]:
@@ -462,13 +518,13 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             "kind": "sequences",
             "type": "line",
             "title": None,
-            "series": [value.split("/", 1) for value in picked],
+            "series": [series_item(value) for value in picked],
             "colours": {},
             "width": "half",
         }
         charts, cards = Patch(), Patch()
         charts.append(chart)
-        cards.append(chart_card(chart, read_selection(selection)))
+        cards.append(chart_cards([chart], selection, name)[0])
         return charts, cards
 
     @app.callback(
@@ -478,9 +534,12 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         Input({"type": "chart-colour", "chart": ALL, "series": ALL}, "value"),
         State("charts-store", "data"),
         State("result-selection", "value"),
+        State("datapackage", "value"),
         prevent_initial_call=True,
     )
-    def edit_chart(_fields: list, _colours: list, charts: list[Chart], selection: list[str] | None) -> tuple:
+    def edit_chart(
+        _fields: list, _colours: list, charts: list[Chart], selection: list[str] | None, name: str | None
+    ) -> tuple:
         if len(ctx.triggered) != 1:
             # A rendered card fires with all its inputs at once (at least title, type, width, series); a user
             # edit changes one.
@@ -494,7 +553,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             colours = {item: colour for item, colour in chart["colours"].items() if item != trigger["series"]}
             chart["colours"] = colours | ({trigger["series"]: value} if value else {})
         elif trigger["field"] == "series":
-            chart["series"] = [item.split("/", 1) for item in value or []]
+            chart["series"] = [series_item(item) for item in value or []]
             chart["colours"] = {item: colour for item, colour in chart["colours"].items() if item in (value or [])}
         elif trigger["field"] == "title":
             chart["title"] = (value or "").strip() or None
@@ -502,7 +561,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             chart[trigger["field"]] = value  # type or width, offered by the card's dropdowns
         patched_charts, cards = Patch(), Patch()
         patched_charts[index] = chart
-        cards[index] = chart_card(chart, read_selection(selection))
+        (cards[index],) = chart_cards([chart], selection, name)
         return patched_charts, cards
 
     @app.callback(
@@ -511,9 +570,12 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         Input({"type": "chart-action", "action": ALL, "chart": ALL}, "n_clicks"),
         State("charts-store", "data"),
         State("result-selection", "value"),
+        State("datapackage", "value"),
         prevent_initial_call=True,
     )
-    def arrange_chart(_clicks: list[int | None], charts: list[Chart], selection: list[str] | None) -> tuple:
+    def arrange_chart(
+        _clicks: list[int | None], charts: list[Chart], selection: list[str] | None, name: str | None
+    ) -> tuple:
         if len(ctx.triggered) != 1 or not ctx.triggered[0]["value"]:
             raise PreventUpdate  # new buttons rendered, not clicked
         index = chart_index(charts, ctx.triggered_id["chart"])
@@ -525,20 +587,18 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         other = index - 1 if ctx.triggered_id["action"] == "up" else index + 1
         if not 0 <= other < len(charts):
             raise PreventUpdate
-        selected = read_selection(selection)
-        for position, chart in ((index, charts[other]), (other, charts[index])):
-            patched_charts[position] = chart
-            cards[position] = chart_card(chart, selected)
+        cards[index], cards[other] = chart_cards([charts[other], charts[index]], selection, name)
+        patched_charts[index], patched_charts[other] = charts[other], charts[index]
         return patched_charts, cards
 
     @app.callback(
         Output("charts", "children"),
         Input("result-selection", "value"),
+        Input("datapackage", "value"),
         State("charts-store", "data"),
     )
-    def render_charts(selection: list[str] | None, charts: list[Chart]) -> list[html.Div]:
-        selected = read_selection(selection)
-        return [chart_card(chart, selected) for chart in charts]
+    def render_charts(selection: list[str] | None, name: str | None, charts: list[Chart]) -> list[html.Div]:
+        return chart_cards(charts, selection, name)
 
     @app.callback(Output("webgl-warning", "children"), Input("charts-store", "data"))
     def warn_webgl(charts: list[Chart]) -> list[html.Div]:
