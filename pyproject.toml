@@ -1,5 +1,21 @@
 [project]
 name = "oemof-dashboard"
 version = "0.1.0"
-requires-python = ">=3.14"
-dependencies = []
+description = "Local Dash app to explore oemof-tabular Datapackages and their Results"
+requires-python = ">=3.12"
+dependencies = ["dash", "dash-cytoscape", "pandas"]
+
+[project.scripts]
+oemof-dashboard = "oemof_dashboard.cli:main"
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+[tool.ruff.lint]
+extend-select = ["I"]
