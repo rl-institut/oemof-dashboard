@@ -162,6 +162,8 @@ def patched(value: list, update: object) -> list:
         match operation["operation"]:
             case "Append":
                 value.append(params["value"])
+            case "Extend":
+                value.extend(params["value"])
             case "Assign":
                 value[location[0]] = params["value"]
             case "Delete":
@@ -466,7 +468,7 @@ def test_inspector_lists_outcomes_per_entry_and_variable_with_add_chart(two_resu
     assert "pv-el · invest" in text
     assert "in 1/2 Results" in text
     assert json.dumps({"type": "outcome-chart", "outcome": "pv-el/flow"}) in text
-    assert "pv-el/invest" not in text  # no chart for Result Scalars yet
+    assert json.dumps({"type": "outcome-chart", "outcome": "pv-el/invest"}) in text
 
 
 def test_inspector_shows_results_without_outcomes_for_node(two_results: tuple) -> None:
@@ -625,3 +627,43 @@ def test_type_switches_within_sequence_kind_keeping_series(page: Page, chart_typ
     assert len(page.series()[0]) == 2
     card = json.dumps(page.cards, ensure_ascii=False)
     assert all(option in card for option in ('"line"', '"stacked_area"', '"duration_curve"'))
+
+
+def test_outcome_picker_offers_result_scalars(adlershof_app: Dash) -> None:
+    inputs = {"result-selection.value": ["adlershof"], "datapackage.value": None, "graph.selectedNodeData": None}
+
+    options = fire(adlershof_app, inputs)["outcome-picker"]["options"]
+
+    assert {"label": "bhkw-electricity · invest", "value": "bhkw-electricity/invest"} in options
+
+
+def test_added_scalar_outcome_is_a_bar_chart_offering_result_scalars_only(page: Page) -> None:
+    page.add("bhkw-electricity/invest")
+
+    (chart,) = page.charts
+    assert (chart["kind"], chart["type"], chart["series"]) == ("scalars", "bar", [["bhkw-electricity", "invest"]])
+    card = json.dumps(page.cards, ensure_ascii=False)
+    assert '"options": ["bar"]' in card  # type dropdown
+    assert '"type": "bar"' in card
+    assert "bhkw-electricity/total" in card  # another Result Scalar offered
+    assert "bhkw-electricity/flow" not in card  # a Result Sequence
+    assert WIND_PROFILE not in card  # an Input Sequence
+
+
+def test_mixed_pick_adds_one_chart_per_kind(page: Page) -> None:
+    page.add("bhkw-electricity/invest", "bhkw-electricity/flow", WIND_PROFILE, "bhkw-electricity/total")
+
+    assert [(chart["kind"], chart["series"]) for chart in page.charts] == [
+        ("sequences", [["bhkw-electricity", "flow"], ["adlershof", "volatile_profile", "wind-profile"]]),
+        ("scalars", [["bhkw-electricity", "invest"], ["bhkw-electricity", "total"]]),
+    ]
+    assert len(page.cards) == 2
+
+
+def test_inspector_add_chart_button_adds_bar_chart_for_scalar(page: Page) -> None:
+    button = {"type": "outcome-chart", "outcome": "bhkw-electricity/invest"}
+    inputs = {"add-chart.n_clicks": None, "outcome-chart": [{"id": button, "property": "n_clicks", "value": 1}]}
+
+    page.apply(fire(page.app, inputs, {"outcome-picker.value": None, **page.states()}, [f"{pattern(button)}.n_clicks"]))
+
+    assert [(chart["kind"], chart["type"]) for chart in page.charts] == [("scalars", "bar")]

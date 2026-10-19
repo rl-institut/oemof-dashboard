@@ -8,6 +8,8 @@ from oemof_dashboard.result import Result, ResultEntry, read
 
 BHKW_FLOW = ("bhkw-electricity", "flow")
 BATTERY_CONTENT = ("battery_large-None", "storage_content")
+PV_INVEST = ("pv-electricity", "invest")
+PV_TOTAL = ("pv-electricity", "total")
 HEAT_DEMAND = ("adlershof", "demands_profile", "heat_central-residential")
 HEAT_PROFILE = pd.Series(
     [0.2, float("nan"), 0.5], index=pd.date_range("2050-01-01", periods=3, freq="h"), name=HEAT_DEMAND[2]
@@ -113,12 +115,6 @@ def test_emptied_chart_is_empty_figure(adlershof: Result) -> None:
     figure, _ = chart_figure(chart(series=[]), {"adlershof": adlershof})
 
     assert figure.data == ()
-
-
-def test_type_must_belong_to_kind(adlershof: Result) -> None:
-    assert "bar" not in CHART_TYPES["sequences"]
-    with pytest.raises(ValueError, match="bar"):
-        chart_figure(chart(type="bar"), {"adlershof": adlershof})
 
 
 def test_colour_override_replaces_palette_for_that_outcome_only(adlershof: Result) -> None:
@@ -257,3 +253,74 @@ def test_colour_override_applies_to_input_sequence(adlershof: Result) -> None:
 
 def test_auto_title_names_input_sequences() -> None:
     assert auto_title([list(HEAT_DEMAND)]) == "adlershof · demands_profile · heat_central-residential"
+
+
+def scalars_result(**scalars: float) -> Result:
+    """Result with one Result Entry pv-electricity holding these Result Scalars."""
+    return Result({"pv-electricity": ResultEntry(scalars=scalars)})
+
+
+def bar(**overrides: object) -> Chart:
+    """Scalar bar chart of PV_INVEST and PV_TOTAL, overridden per test."""
+    return chart(kind="scalars", type="bar", series=[list(PV_INVEST), list(PV_TOTAL)]) | overrides
+
+
+def test_bar_chart_of_one_result_has_one_bar_per_outcome_coloured_by_outcome() -> None:
+    figure, notices = chart_figure(bar(), {"base": scalars_result(invest=3.0, total=5.0)})
+
+    assert [(trace.type, trace.name, list(trace.x), list(trace.y), trace.marker.color) for trace in figure.data] == [
+        ("bar", "pv-electricity · invest", ["base"], [3.0], "#2a78d6"),
+        ("bar", "pv-electricity · total", ["base"], [5.0], "#eb6834"),
+    ]
+    assert figure.layout.barmode == "group"
+    assert figure.layout.title.text == "pv-electricity · invest, pv-electricity · total"
+    assert notices == []
+
+
+def test_bar_chart_groups_bars_by_result_even_with_numeric_names() -> None:
+    results = {"base": scalars_result(invest=3.0, total=5.0), "2045": scalars_result(invest=4.0, total=6.0)}
+
+    figure, _ = chart_figure(bar(), results)
+
+    assert figure.layout.xaxis.type == "category"
+
+    assert [(list(trace.x), list(trace.y)) for trace in figure.data] == [
+        (["base", "2045"], [3.0, 4.0]),
+        (["base", "2045"], [5.0, 6.0]),
+    ]
+
+
+def test_scalar_missing_from_a_result_is_legend_entry_without_bar() -> None:
+    results = {"base": scalars_result(invest=3.0, total=5.0), "other": Result({})}
+
+    figure, _ = chart_figure(bar(series=[list(PV_INVEST)]), results)
+
+    invest, missing = figure.data
+    assert list(invest.y) == [3.0, None]
+    assert missing.name == "pv-electricity · invest · other (missing)"
+    assert missing.showlegend is True
+    assert missing.marker.color == "#2a78d6"
+    assert missing.legendgroup == invest.legendgroup is not None  # toggled together
+    assert all(value is None for value in missing.y)
+
+
+def test_colour_override_applies_to_bar_outcome_only() -> None:
+    figure, _ = chart_figure(
+        bar(colours={"pv-electricity/total": "#123456"}), {"base": scalars_result(invest=3.0, total=5.0)}
+    )
+
+    assert [trace.marker.color for trace in figure.data] == ["#2a78d6", "#123456"]
+
+
+def test_bar_is_the_only_type_of_scalar_kind() -> None:
+    assert CHART_TYPES["scalars"] == ("bar",)
+
+
+@pytest.mark.parametrize(("kind", "chart_type"), [("sequences", "bar"), ("scalars", "line")])
+def test_type_must_belong_to_kind(kind: str, chart_type: str) -> None:
+    with pytest.raises(ValueError, match=chart_type):
+        chart_figure(chart(kind=kind, type=chart_type), {})
+
+
+def test_bar_charts_are_not_webgl() -> None:
+    assert webgl_warning([bar(id=str(index)) for index in range(9)]) is None

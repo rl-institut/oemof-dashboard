@@ -54,3 +54,15 @@ def _read(path: Path, stamps: tuple[tuple[str, int], ...]) -> Result:
 def sequence_outcomes(result: Result) -> set[tuple[str, str]]:
     """List the Result Sequences of a Result as (Result Entry, variable) Outcomes."""
     return {(name, variable) for name, entry in result.entries.items() for variable in entry.sequences.columns}
+
+
+def scalar_outcomes(result: Result) -> set[tuple[str, str]]:
+    """List the Result Scalars of a Result as Outcomes.
+
+    Args:
+        result: Result to list.
+
+    Returns:
+        Outcomes as (Result Entry, variable).
+    """
+    return {(name, variable) for name, entry in result.entries.items() for variable in entry.scalars}

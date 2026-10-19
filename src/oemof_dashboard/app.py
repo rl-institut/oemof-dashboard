@@ -24,7 +24,7 @@ from oemof_dashboard.charts import (
 )
 from oemof_dashboard.cli import discover_datapackages, discover_results
 from oemof_dashboard.matching import Matching, match
-from oemof_dashboard.result import Result, read, sequence_outcomes
+from oemof_dashboard.result import Result, read, scalar_outcomes, sequence_outcomes
 
 HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
 MIN_MATCH_RATIO = 0.5  # below it, the selected Datapackage likely belongs to another Result
@@ -132,7 +132,7 @@ def node_link(name: str) -> html.Button:
 
 
 def outcome_rows(package: datapackage.Datapackage, name: str, results: dict[str, Result]) -> list:
-    """Outcomes of a node's Result Entries per Result Entry × variable, with "+ chart" for Result Sequences.
+    """Outcomes of a node's Result Entries per Result Entry × variable, each with "+ chart".
 
     Args:
         package: Datapackage holding the node.
@@ -143,7 +143,6 @@ def outcome_rows(package: datapackage.Datapackage, name: str, results: dict[str,
         Dash children: a table of Outcomes with "in n/m Results", and a line per Result without Outcomes.
     """
     counts: Counter[tuple[str, str]] = Counter()
-    sequences = set().union(*map(sequence_outcomes, results.values()))
     without = []
     for result_name, result in results.items():
         entries = match(result, package).entries_of({name})
@@ -157,11 +156,7 @@ def outcome_rows(package: datapackage.Datapackage, name: str, results: dict[str,
             [
                 html.Td(f"{entry} · {variable}"),
                 html.Td(f"in {count}/{len(results)} Results"),
-                html.Td(
-                    html.Button("+ chart", id={"type": "outcome-chart", "outcome": f"{entry}/{variable}"})
-                    if (entry, variable) in sequences
-                    else ""
-                ),
+                html.Td(html.Button("+ chart", id={"type": "outcome-chart", "outcome": f"{entry}/{variable}"})),
             ]
         )
         for (entry, variable), count in sorted(counts.items())
@@ -216,7 +211,7 @@ def chart_card(
     Args:
         chart: Chart config.
         results: Result Selection as Result name → Result.
-        input_items: Input Sequences of the selected Datapackage, offered as series.
+        input_items: Input Sequences of the selected Datapackage, offered as series of sequence charts.
         inputs: Loaded Input Sequences of the chart by (Datapackage, resource, column).
 
     Returns:
@@ -224,9 +219,12 @@ def chart_card(
     """
     chart_id = chart["id"]
     picked = [series_key(item) for item in chart["series"]]
-    # ponytail: sequence kind only until scalar charts arrive; then pick the outcomes by chart["kind"]
-    outcomes = {series_key(item) for result in results.values() for item in sequence_outcomes(result)}
-    offered = outcomes | {series_key(item) for item in input_items} | set(picked)
+    if chart["kind"] == "scalars":
+        offered = {series_key(item) for result in results.values() for item in scalar_outcomes(result)}
+    else:
+        offered = {series_key(item) for result in results.values() for item in sequence_outcomes(result)}
+        offered |= {series_key(item) for item in input_items}
+    offered |= set(picked)
     options = [{"label": series_label(series_item(key)), "value": key} for key in sorted(offered)]
     figure, notices = chart_figure(chart, results, inputs)
 
@@ -413,9 +411,8 @@ def create_app(datapackages: Path, results: Path) -> Dash:
     def list_outcomes(
         selection: list[str] | None, name: str | None, selected_nodes: list[dict] | None
     ) -> list[dict[str, str]]:
-        # ponytail: Result Sequences only while sequence charts are the only charts; scalars arrive with the bar chart
         selected = read_selection(selection)
-        outcomes = set().union(*map(sequence_outcomes, selected.values()))
+        outcomes = set().union(*map(sequence_outcomes, selected.values()), *map(scalar_outcomes, selected.values()))
         nodes = selected_node_names(name, selected_nodes)
         inputs: set[tuple[str, str, str]] = set()
         if name:
@@ -513,18 +510,31 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             picked = [ctx.triggered_id["outcome"]]
         if not picked:
             raise PreventUpdate
-        chart: Chart = {
-            "id": uuid.uuid4().hex,
-            "kind": "sequences",
-            "type": "line",
-            "title": None,
-            "series": [series_item(value) for value in picked],
-            "colours": {},
-            "width": "half",
+        # Sequence and scalar items never mix in one chart: a mixed pick adds one chart per kind.
+        # ponytail: an Outcome counts as scalar if it is a Result Scalar in any selected Result
+        scalars = {
+            series_key(item) for result in read_selection(selection).values() for item in scalar_outcomes(result)
         }
+        by_kind = {
+            "sequences": [value for value in picked if value not in scalars],
+            "scalars": [value for value in picked if value in scalars],
+        }
+        new: list[Chart] = [
+            {
+                "id": uuid.uuid4().hex,
+                "kind": kind,
+                "type": CHART_TYPES[kind][0],
+                "title": None,
+                "series": [series_item(value) for value in values],
+                "colours": {},
+                "width": "half",
+            }
+            for kind, values in by_kind.items()
+            if values
+        ]
         charts, cards = Patch(), Patch()
-        charts.append(chart)
-        cards.append(chart_cards([chart], selection, name)[0])
+        charts.extend(new)
+        cards.extend(chart_cards(new, selection, name))
         return charts, cards
 
     @app.callback(

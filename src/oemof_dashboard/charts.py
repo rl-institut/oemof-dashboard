@@ -17,7 +17,7 @@ PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6
 DASHES = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
 MAX_DISTINCT_RESULTS = 4
 # Chart types per kind; a chart's kind is fixed at creation, its type switches within the kind.
-CHART_TYPES = {"sequences": ("line", "stacked_area", "duration_curve")}
+CHART_TYPES = {"sequences": ("line", "stacked_area", "duration_curve"), "scalars": ("bar",)}
 MAX_TITLE_SERIES = 3
 # Browsers cap live WebGL contexts (~8–16); beyond that charts go blank.
 WEBGL_TYPES = {"line", "duration_curve"}
@@ -29,13 +29,14 @@ INPUT_PREFIX = "input:"
 class Chart(TypedDict):
     """Chart config as kept in the charts store (JSON).
 
-    `series` holds Outcomes as [Result Entry, variable] and Input Sequences as [Datapackage, resource, column];
+    `series` holds Outcomes as [Result Entry, variable] and, in sequence charts only, Input Sequences as
+    [Datapackage, resource, column];
     `colours` maps a series key (see `series_key`) to a hex colour overriding the palette; `title` None means auto.
     """
 
     id: str
-    kind: Literal["sequences"]
-    type: Literal["line", "stacked_area", "duration_curve"]
+    kind: Literal["sequences", "scalars"]
+    type: Literal["line", "stacked_area", "duration_curve", "bar"]
     title: str | None
     series: list[list[str]]
     colours: dict[str, str]
@@ -115,10 +116,19 @@ def chart_figure(
     """
     if chart["type"] not in CHART_TYPES.get(chart["kind"], ()):
         raise ValueError(f"Chart type {chart['type']!r} isn't of kind {chart['kind']!r}")
-    builder = {"line": line_chart, "stacked_area": stacked_area, "duration_curve": duration_curve}[chart["type"]]
-    figure, notices = builder([tuple(item) for item in chart["series"]], results, chart["colours"], inputs)
+    series = [tuple(item) for item in chart["series"]]
+    if chart["type"] == "bar":
+        figure, notices = bar_chart(series, results, chart["colours"])
+    else:
+        builder = {"line": line_chart, "stacked_area": stacked_area, "duration_curve": duration_curve}[chart["type"]]
+        figure, notices = builder(series, results, chart["colours"], inputs)
     figure.update_layout(title_text=chart["title"] or auto_title(chart["series"]), margin_t=30)
     return figure, notices
+
+
+def _colour(index: int, item: tuple[str, ...], colours: dict[str, str] | None) -> str:
+    # ponytail: palette wraps after 8 series; a colour override is the way out
+    return (colours or {}).get(series_key(item), PALETTE[index % len(PALETTE)])
 
 
 def _traces(
@@ -130,8 +140,7 @@ def _traces(
     # (colour, Result index, trace name, data or None if missing) per Outcome × Result and once per Input Sequence
     # (Result index None), in series order.
     for index, item in enumerate(series):
-        # ponytail: palette wraps after 8 series; a colour override is the way out
-        colour = (colours or {}).get(series_key(item), PALETTE[index % len(PALETTE)])
+        colour = _colour(index, item, colours)
         if len(item) == 3:
             yield colour, None, series_label(item), (inputs or {}).get(item)
             continue
@@ -249,6 +258,36 @@ def stacked_area(
                 figure.add_trace(go.Scatter(**data, legendgroup=name, showlegend=row == 1), row=row, col=1)
         else:
             figure.add_trace(go.Scatter(**data, stackgroup=str(result_index + 1)), row=result_index + 1, col=1)
+    return figure, []
+
+
+def bar_chart(
+    series: list[tuple[str, ...]], results: dict[str, Result], colours: dict[str, str] | None = None
+) -> tuple[go.Figure, list[str]]:
+    """Build a grouped bar chart of Result Scalars across the Result Selection.
+
+    Args:
+        series: Outcomes as (Result Entry, variable), in palette and bar order within a group.
+        results: Result Selection as Result name → Result, one group of bars each, left to right.
+        colours: Hex colours by series key, overriding the palette for those series.
+
+    Returns:
+        Figure with one `Bar` trace per Outcome over the Results; an Outcome missing from a Result has no bar there
+        and a legend entry "<Outcome> · <Result> (missing)" instead. No notices.
+    """
+    # Category axis: Result names such as "2045" would otherwise make a numeric axis.
+    layout = {"barmode": "group", "xaxis": {"type": "category"}, "margin": {"l": 40, "r": 10, "t": 10, "b": 30}}
+    figure = go.Figure(layout=layout)
+    for index, item in enumerate(series):
+        entry, variable = item
+        label = series_label(item)
+        style = {"marker": {"color": _colour(index, item, colours)}, "legendgroup": label}
+        values = {
+            name: result.entries.get(entry, ResultEntry()).scalars.get(variable) for name, result in results.items()
+        }
+        figure.add_trace(go.Bar(x=list(values), y=list(values.values()), name=label, **style))
+        for name in (name for name, value in values.items() if value is None):
+            figure.add_trace(go.Bar(x=[None], y=[None], name=f"{label} · {name} (missing)", showlegend=True, **style))
     return figure, []
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from oemof_dashboard.result import read, sequence_outcomes
+from oemof_dashboard.result import read, scalar_outcomes, sequence_outcomes
 
 
 def test_reads_adlershof_result_entries_as_written(shipped_data: Path) -> None:
@@ -55,3 +55,10 @@ def test_sequence_outcomes_are_entry_variable_pairs(shipped_data: Path) -> None:
     assert ("bhkw-electricity", "flow") in outcomes
     assert ("battery_large-None", "storage_content") in outcomes
     assert ("bhkw-electricity", "invest") not in outcomes  # Result Scalar
+
+
+def test_scalar_outcomes_are_entry_variable_pairs(shipped_data: Path) -> None:
+    outcomes = scalar_outcomes(read(shipped_data / "results" / "adlershof"))
+
+    assert {("bhkw-electricity", "invest"), ("battery_large-None", "init_content")} <= outcomes
+    assert ("bhkw-electricity", "flow") not in outcomes  # Result Sequence
