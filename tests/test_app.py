@@ -1,14 +1,20 @@
 import json
+import math
 import socket
 import threading
 import time
 import urllib.request
 from pathlib import Path
 
+import pandas as pd
 import pytest
+from conftest import package_of, result_of
 from dash import Dash
+from plotly.utils import PlotlyJSONEncoder
 
-from oemof_dashboard.app import create_app
+from oemof_dashboard import datapackage
+from oemof_dashboard.app import create_app, graph_elements, inspector
+from oemof_dashboard.result import Result, read
 
 EXPLORER_IDS = [
     "datapackage",
@@ -166,6 +172,7 @@ def test_inspector_summary_lists_result_entries_without_datapackage(adlershof_ap
     inspector = fire(
         adlershof_app,
         {"graph.tapNode": None, "node-link": [], "datapackage.value": None, "result-selection.value": ["adlershof"]},
+        {"graph.selectedNodeData": None},
         changed=["result-selection.value"],
     )["inspector"]
 
@@ -202,7 +209,13 @@ class Page:
 
     def add(self, *picked: str) -> None:
         """Pick Outcomes as "<Result Entry>/<variable>" and click "Add chart"."""
-        self.apply(fire(self.app, {"add-chart.n_clicks": 1}, {"outcome-picker.value": list(picked), **self.states()}))
+        self.apply(
+            fire(
+                self.app,
+                {"add-chart.n_clicks": 1, "outcome-chart": []},
+                {"outcome-picker.value": list(picked), **self.states()},
+            )
+        )
 
     def edit(self, field: str, chart: int, value: object) -> None:
         """Set a card's title, type, width or series control."""
@@ -372,3 +385,173 @@ def test_dropping_a_series_drops_its_colour_override(page: Page) -> None:
     page.edit("series", 0, ["wind-electricity/flow"])
 
     assert page.charts[0]["colours"] == {"wind-electricity/flow": "#abcdef"}
+
+
+def edges(elements: list[dict]) -> dict[tuple[str, str], dict]:
+    """Graph edges by (source, target)."""
+    return {(edge["data"]["source"], edge["data"]["target"]): edge for edge in elements if "source" in edge["data"]}
+
+
+def test_graph_draws_flows_of_result_as_arrows_with_sum(shipped_data: Path) -> None:
+    package = datapackage.read(shipped_data / "datapackages" / "adlershof")
+
+    drawn = edges(graph_elements(package, read(shipped_data / "results" / "adlershof")))
+
+    absorption = drawn[("cool_process-absorption", "cool_process")]
+    assert absorption["classes"] == "flow"
+    assert absorption["data"]["label"] == "Σ 88,661"
+    assert drawn[("electricity", "cool_process-absorption")]["classes"] == "flow"
+
+
+def test_graph_without_result_draws_connections_undirected(shipped_data: Path) -> None:
+    package = package_of(["el"], [("pv", "el")])
+
+    assert edges(graph_elements(package, None)) == {("pv", "el"): {"data": {"source": "pv", "target": "el"}}}
+
+
+def test_graph_sums_flow_dropping_trailing_nan_and_marks_flows_not_in_datapackage() -> None:
+    package = package_of(["el", "heat"], [("pv", "el"), ("boiler", "heat")])
+    result = result_of("pv-el", "pv-heat")
+    index = pd.date_range("2050-01-01", periods=3, freq="h")
+    result.entries["pv-el"].sequences = pd.DataFrame({"flow": [1.5, 2.0, math.nan]}, index=index)
+
+    drawn = edges(graph_elements(package, result))
+
+    assert drawn[("pv", "el")]["data"]["label"] == "Σ 4"
+    assert drawn[("pv", "heat")]["classes"] == "flow foreign"
+    assert drawn[("pv", "heat")]["data"]["label"] == "not in Datapackage"
+    assert drawn[("boiler", "heat")] == {"data": {"source": "boiler", "target": "heat"}}  # no Flow in Result
+
+
+def test_graph_callback_draws_flows_of_first_result(adlershof_app: Dash) -> None:
+    elements = fire(adlershof_app, {"datapackage.value": "adlershof", "result-selection.value": ["adlershof"]})
+
+    drawn = edges(elements["graph"]["elements"])
+    assert drawn[("cool_process-absorption", "cool_process")]["classes"] == "flow"
+
+
+def rendered(children: list) -> str:
+    """Dash children as the JSON sent to the browser."""
+    return json.dumps(children, cls=PlotlyJSONEncoder, ensure_ascii=False)
+
+
+@pytest.fixture
+def two_results() -> tuple[datapackage.Datapackage, dict[str, Result]]:
+    """pv and wind feeding Bus el; Result r1 has pv-el (flow sequence, invest scalar), r2 has wind-el only."""
+    package = package_of(["el"], [("pv", "el"), ("wind", "el")])
+    first, second = result_of("pv-el"), result_of("wind-el")
+    index = pd.date_range("2050-01-01", periods=2, freq="h")
+    first.entries["pv-el"].sequences = pd.DataFrame({"flow": [1.0, 2.0]}, index=index)
+    first.entries["pv-el"].scalars = {"invest": 3.0}
+    second.entries["wind-el"].sequences = pd.DataFrame({"flow": [1.0, 2.0]}, index=index)
+    return package, {"r1": first, "r2": second}
+
+
+def test_inspector_lists_outcomes_per_entry_and_variable_with_add_chart(two_results: tuple) -> None:
+    package, results = two_results
+
+    text = rendered(inspector(package, "pv", results))
+
+    assert "pv-el · flow" in text
+    assert "pv-el · invest" in text
+    assert "in 1/2 Results" in text
+    assert json.dumps({"type": "outcome-chart", "outcome": "pv-el/flow"}) in text
+    assert "pv-el/invest" not in text  # no chart for Result Scalars yet
+
+
+def test_inspector_shows_results_without_outcomes_for_node(two_results: tuple) -> None:
+    package, results = two_results
+
+    text = rendered(inspector(package, "wind", results))
+
+    assert "r1: no Outcomes in this Result" in text
+    assert "r2: no Outcomes" not in text
+
+
+NO_SELECTED_NODE = {"graph.selectedNodeData": None}
+
+
+def inspect_inputs(datapackage_name: str | None, tapped: str | None = None) -> dict[str, object]:
+    """Inspector callback inputs before the Result Selection: a tapped node, no link clicks, a Datapackage."""
+    return {
+        "graph.tapNode": {"data": {"id": tapped}} if tapped else None,
+        "node-link": [],
+        "datapackage.value": datapackage_name,
+    }
+
+
+def test_inspector_summary_lists_unmatched_and_warns_on_low_match_ratio(shipped_data: Path, tmp_path: Path) -> None:
+    (tmp_path / "mixed").mkdir()
+    for entry in ("bhkw-electricity", "foo-bar", "baz"):
+        (tmp_path / "mixed" / f"{entry}-scalars.csv").write_text("variable_name;2050-01-01\ninvest;1.0\n")
+    app = create_app(shipped_data / "datapackages", tmp_path)
+
+    inputs = inspect_inputs("adlershof") | {"result-selection.value": ["mixed"]}
+    text = rendered(fire(app, inputs, NO_SELECTED_NODE, changed=["result-selection.value"])["inspector"]["children"])
+
+    assert "Datapackage likely doesn't belong to this Result" in text
+    assert "mixed: 2 unmatched" in text
+    assert "foo-bar: no split into two Datapackage names" in text
+
+
+def test_inspector_summary_without_banner_when_result_matches(adlershof_app: Dash) -> None:
+    inputs = inspect_inputs("adlershof") | {"result-selection.value": ["adlershof"]}
+    text = rendered(
+        fire(adlershof_app, inputs, NO_SELECTED_NODE, changed=["result-selection.value"])["inspector"]["children"]
+    )
+
+    assert "doesn't belong" not in text
+    assert "adlershof: 0 unmatched" in text
+
+
+def test_tapping_node_shows_its_outcomes(adlershof_app: Dash) -> None:
+    inputs = inspect_inputs("adlershof", tapped="bhkw") | {"result-selection.value": ["adlershof"]}
+    text = rendered(fire(adlershof_app, inputs, NO_SELECTED_NODE, changed=["graph.tapNode"])["inspector"]["children"])
+
+    assert "bhkw-electricity · flow" in text
+    assert "in 1/1 Results" in text
+
+
+@pytest.mark.parametrize(
+    ("selected", "wind_listed"), [([{"id": "bhkw"}], False), ([], True), (None, True), ([{"id": "gone"}], True)]
+)
+def test_selected_graph_node_prefilters_outcome_picker(
+    adlershof_app: Dash, selected: list | None, wind_listed: bool
+) -> None:
+    inputs = {
+        "result-selection.value": ["adlershof"],
+        "datapackage.value": "adlershof",
+        "graph.selectedNodeData": selected,
+    }
+
+    values = [option["value"] for option in fire(adlershof_app, inputs)["outcome-picker"]["options"]]
+
+    assert {"bhkw-electricity/flow", "gas-bhkw/flow"} <= set(values)
+    assert ("wind-electricity/flow" in values) is wind_listed
+
+
+def test_add_chart_button_in_inspector_adds_line_chart(page: Page) -> None:
+    button = {"type": "outcome-chart", "outcome": "bhkw-electricity/flow"}
+    inputs = {"add-chart.n_clicks": None, "outcome-chart": [{"id": button, "property": "n_clicks", "value": 1}]}
+
+    page.apply(fire(page.app, inputs, {"outcome-picker.value": None, **page.states()}, [f"{pattern(button)}.n_clicks"]))
+
+    assert page.series() == [[["bhkw-electricity", "flow"]]]
+
+
+def test_rendering_add_chart_buttons_adds_no_chart(page: Page) -> None:
+    button = {"type": "outcome-chart", "outcome": "bhkw-electricity/flow"}
+    inputs = {"add-chart.n_clicks": None, "outcome-chart": [{"id": button, "property": "n_clicks", "value": None}]}
+
+    response = fire(page.app, inputs, {"outcome-picker.value": None, **page.states()}, [f"{pattern(button)}.n_clicks"])
+
+    assert response == {}
+
+
+def test_inspector_keeps_selected_node_when_result_selection_changes(adlershof_app: Dash) -> None:
+    inputs = inspect_inputs("adlershof") | {"result-selection.value": ["adlershof"]}
+    states = {"graph.selectedNodeData": [{"id": "bhkw"}]}
+
+    text = rendered(fire(adlershof_app, inputs, states, changed=["result-selection.value"])["inspector"]["children"])
+
+    assert "bhkw-electricity · flow" in text

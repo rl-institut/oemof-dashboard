@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from collections import Counter
 from pathlib import Path
 
 import dash_cytoscape as cyto
@@ -11,9 +12,11 @@ from dash.exceptions import PreventUpdate
 from oemof_dashboard import datapackage
 from oemof_dashboard.charts import CHART_TYPES, PALETTE, Chart, auto_title, chart_figure, webgl_warning
 from oemof_dashboard.cli import discover_datapackages, discover_results
+from oemof_dashboard.matching import Matching, match
 from oemof_dashboard.result import Result, read, sequence_outcomes
 
 HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
+MIN_MATCH_RATIO = 0.5  # below it, the selected Datapackage likely belongs to another Result
 GRAPH_STYLESHEET = [
     {"selector": "node", "style": {"label": "data(id)", "font-size": 8, "width": 12, "height": 12}},
     {"selector": ".component", "style": {"background-color": "#8a9bb0"}},
@@ -28,22 +31,59 @@ GRAPH_STYLESHEET = [
         },
     },
     {"selector": "edge", "style": {"width": 1, "line-color": "#bbb"}},
+    {
+        "selector": ".flow",
+        "style": {
+            "curve-style": "bezier",  # keeps the two Flows of one Connection apart
+            "target-arrow-shape": "triangle",
+            "target-arrow-color": "#888",
+            "line-color": "#888",
+            "label": "data(label)",
+            "font-size": 7,
+            "text-rotation": "autorotate",
+        },
+    },
+    {
+        "selector": ".foreign",
+        "style": {"line-color": "#e34948", "target-arrow-color": "#e34948", "line-style": "dashed"},
+    },
 ]
 
 
-def graph_elements(package: datapackage.Datapackage) -> list[dict]:
-    """Cytoscape nodes for all Buses and Components, and one edge per Connection.
+def graph_elements(package: datapackage.Datapackage, result: Result | None) -> list[dict]:
+    """Cytoscape nodes for all Buses and Components, an arrow per Flow of the Result, and an edge per Connection
+    without Flows.
 
     Args:
         package: Datapackage to draw.
+        result: First Result of the Result Selection, or None.
 
     Returns:
-        Cytoscape elements.
+        Cytoscape elements; Flows are labelled with the sum of their `flow` (trailing NaN dropped), Flows without
+        a Connection are drawn with class `foreign` and labelled "not in Datapackage".
     """
     nodes = [{"data": {"id": name}, "classes": "bus"} for name in package.buses]
     nodes += [{"data": {"id": name}, "classes": "component"} for name in package.components]
-    edges = [{"data": {"source": component, "target": bus}} for component, bus in package.connections]
-    return nodes + edges
+    matching = match(result, package) if result is not None else Matching()
+    flows = []
+    for entry, (source, target) in matching.matched.items():
+        if target is None:
+            continue
+        data = {"source": source, "target": target}
+        sequences = result.entries[entry].sequences
+        if entry in matching.unmatched:
+            flows.append({"data": data | {"label": "not in Datapackage"}, "classes": "flow foreign"})
+            continue
+        if "flow" in sequences.columns:
+            data["label"] = f"Σ {sequences['flow'].sum():,.0f}"  # pandas skips the trailing NaN
+        flows.append({"data": data, "classes": "flow"})
+    flowing = {frozenset((flow["data"]["source"], flow["data"]["target"])) for flow in flows}
+    connections = [
+        {"data": {"source": component, "target": bus}}
+        for component, bus in package.connections
+        if frozenset((component, bus)) not in flowing
+    ]
+    return nodes + flows + connections
 
 
 def node_link(name: str) -> html.Button:
@@ -58,12 +98,52 @@ def node_link(name: str) -> html.Button:
     return html.Button(name, id={"type": "node-link", "node": name}, className="node-link")
 
 
-def inspector(package: datapackage.Datapackage, name: str) -> list:
-    """Inspector content for one Bus or Component: type/resource, Connections, Parameters, Input Sequences.
+def outcome_rows(package: datapackage.Datapackage, name: str, results: dict[str, Result]) -> list:
+    """Outcomes of a node's Result Entries per Result Entry × variable, with "+ chart" for Result Sequences.
 
     Args:
         package: Datapackage holding the node.
         name: Bus or Component name.
+        results: Result Selection as Result name → Result.
+
+    Returns:
+        Dash children: a table of Outcomes with "in n/m Results", and a line per Result without Outcomes.
+    """
+    counts: Counter[tuple[str, str]] = Counter()
+    sequences = set().union(*map(sequence_outcomes, results.values()))
+    without = []
+    for result_name, result in results.items():
+        entries = match(result, package).entries_of({name})
+        if not entries:
+            without.append(html.Div(f"{result_name}: no Outcomes in this Result"))
+        for entry in entries:
+            found = result.entries[entry]
+            counts.update((entry, variable) for variable in {*found.scalars, *found.sequences.columns})
+    rows = [
+        html.Tr(
+            [
+                html.Td(f"{entry} · {variable}"),
+                html.Td(f"in {count}/{len(results)} Results"),
+                html.Td(
+                    html.Button("+ chart", id={"type": "outcome-chart", "outcome": f"{entry}/{variable}"})
+                    if (entry, variable) in sequences
+                    else ""
+                ),
+            ]
+        )
+        for (entry, variable), count in sorted(counts.items())
+    ]
+    return [html.Table(rows), *without]
+
+
+def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Result]) -> list:
+    """Inspector content for one Bus or Component: type/resource, Connections, Parameters, Input Sequences, and
+    its Outcomes in the Result Selection.
+
+    Args:
+        package: Datapackage holding the node.
+        name: Bus or Component name.
+        results: Result Selection as Result name → Result.
 
     Returns:
         Dash children for the inspector pane.
@@ -88,6 +168,7 @@ def inspector(package: datapackage.Datapackage, name: str) -> list:
                 for key, ref in sequences.items()
             ]
         ),
+        *([html.Label("Outcomes"), *outcome_rows(package, name, results)] if results else []),
     ]
 
 
@@ -256,14 +337,38 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         # Parsed lazily on selection; `read` re-uses the parse until a Result file changes.
         return {name: read(results / name) for name in selection or []}
 
-    @app.callback(Output("graph", "elements"), Input("datapackage", "value"))
-    def draw_graph(name: str | None) -> list[dict]:
-        return graph_elements(datapackage.read(datapackages / name)) if name else []
+    def selected_node_names(name: str | None, selected_nodes: list[dict] | None) -> set[str]:
+        # Cytoscape may keep a selection from the previous Datapackage; drop names it doesn't have.
+        if not name or not selected_nodes:
+            return set()
+        package = datapackage.read(datapackages / name)
+        return {node["id"] for node in selected_nodes} & (package.buses.keys() | package.components.keys())
 
-    @app.callback(Output("outcome-picker", "options"), Input("result-selection", "value"))
-    def list_outcomes(selection: list[str] | None) -> list[dict[str, str]]:
+    @app.callback(Output("graph", "elements"), Input("datapackage", "value"), Input("result-selection", "value"))
+    def draw_graph(name: str | None, selection: list[str] | None) -> list[dict]:
+        if not name:
+            return []
+        # Flows of the first Result only: one graph can't show several Results' sums.
+        first = read(results / selection[0]) if selection else None
+        return graph_elements(datapackage.read(datapackages / name), first)
+
+    @app.callback(
+        Output("outcome-picker", "options"),
+        Input("result-selection", "value"),
+        Input("datapackage", "value"),
+        Input("graph", "selectedNodeData"),  # emptied by tapping the graph background
+    )
+    def list_outcomes(
+        selection: list[str] | None, name: str | None, selected_nodes: list[dict] | None
+    ) -> list[dict[str, str]]:
         # ponytail: Result Sequences only while the line chart is the only chart; scalars arrive with the bar chart
-        outcomes = set().union(*map(sequence_outcomes, read_selection(selection).values()))
+        selected = read_selection(selection)
+        outcomes = set().union(*map(sequence_outcomes, selected.values()))
+        nodes = selected_node_names(name, selected_nodes)
+        if nodes:
+            package = datapackage.read(datapackages / name)
+            entries = set().union(*(match(result, package).entries_of(nodes) for result in selected.values()))
+            outcomes = {(entry, variable) for entry, variable in outcomes if entry in entries}
         # Result Entry names come from file names, so they never contain "/".
         return [
             {"label": f"{entry} · {variable}", "value": f"{entry}/{variable}"} for entry, variable in sorted(outcomes)
@@ -275,28 +380,57 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         Input({"type": "node-link", "node": ALL}, "n_clicks"),
         Input("datapackage", "value"),
         Input("result-selection", "value"),
+        State("graph", "selectedNodeData"),
     )
-    def inspect(tapped: dict | None, _clicks: list[int | None], name: str | None, selection: list[str] | None) -> list:
+    def inspect(
+        tapped: dict | None,
+        _clicks: list[int | None],
+        name: str | None,
+        selection: list[str] | None,
+        selected_nodes: list[dict] | None,
+    ) -> list:
         link_clicked = isinstance(ctx.triggered_id, dict)
         if link_clicked and not ctx.triggered[0]["value"]:
             raise PreventUpdate  # new links rendered, not clicked
         package = datapackage.read(datapackages / name) if name else None
+        selected = read_selection(selection)
         if package and link_clicked:
-            return inspector(package, ctx.triggered_id["node"])
+            return inspector(package, ctx.triggered_id["node"], selected)
         if package and ctx.triggered_id == "graph":
-            return inspector(package, tapped["data"]["id"])
+            return inspector(package, tapped["data"]["id"], selected)
+        kept = selected_node_names(name, selected_nodes)
+        if kept and ctx.triggered_id == "result-selection":
+            return inspector(package, min(kept), selected)
         # Nothing selected: summarise the inputs.
-        warnings = [html.Div(warning, className="warning") for warning in package.warnings] if package else []
-        return warnings + [
-            html.Details(
-                open=True,
-                children=[
-                    html.Summary(f"{result_name}: {len(result.entries)} Result Entries"),
-                    html.Ul([html.Li(entry) for entry in result.entries]),
-                ],
+        summary = [html.Div(warning, className="warning") for warning in package.warnings] if package else []
+        for result_name, result in selected.items():
+            summary.append(
+                html.Details(
+                    open=True,
+                    children=[
+                        html.Summary(f"{result_name}: {len(result.entries)} Result Entries"),
+                        html.Ul([html.Li(entry) for entry in result.entries]),
+                    ],
+                )
             )
-            for result_name, result in read_selection(selection).items()
-        ]
+            if not package:
+                continue
+            matching = match(result, package)
+            if matching.ratio < MIN_MATCH_RATIO:
+                banner = (
+                    f"{result_name}: Datapackage likely doesn't belong to this Result ({matching.ratio:.0%} matched)"
+                )
+                summary.insert(0, html.Div(banner, className="warning"))
+            summary.append(
+                html.Details(
+                    open=bool(matching.unmatched),
+                    children=[
+                        html.Summary(f"{result_name}: {len(matching.unmatched)} unmatched"),
+                        html.Ul([html.Li(f"{entry}: {reason}") for entry, reason in matching.unmatched.items()]),
+                    ],
+                )
+            )
+        return summary
 
     # Chart callbacks keep "charts-store" and the cards in "charts" in step by patching both at the same index,
     # so editing one chart re-renders only its card.
@@ -304,12 +438,23 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         Output("charts-store", "data"),
         Output("charts", "children", allow_duplicate=True),
         Input("add-chart", "n_clicks"),
+        Input({"type": "outcome-chart", "outcome": ALL}, "n_clicks"),
         State("outcome-picker", "value"),
         State("charts-store", "data"),
         State("result-selection", "value"),
         prevent_initial_call=True,
     )
-    def add_chart(_clicks: int, picked: list[str] | None, _charts: list[Chart], selection: list[str] | None) -> tuple:
+    def add_chart(
+        _clicks: int | None,
+        _outcome_clicks: list[int | None],
+        picked: list[str] | None,
+        _charts: list[Chart],
+        selection: list[str] | None,
+    ) -> tuple:
+        if isinstance(ctx.triggered_id, dict):
+            if not ctx.triggered[0]["value"]:
+                raise PreventUpdate  # new "+ chart" buttons rendered, not clicked
+            picked = [ctx.triggered_id["outcome"]]
         if not picked:
             raise PreventUpdate
         chart: Chart = {
