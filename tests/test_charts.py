@@ -11,6 +11,7 @@ from oemof_dashboard.charts import (
     PALETTE,
     Chart,
     auto_title,
+    bus_balance,
     chart_figure,
     line_chart,
     sankey,
@@ -465,8 +466,8 @@ def test_sankey_chart_without_datapackage_is_empty_with_notice() -> None:
     assert notices == ["Sankey needs a selected Datapackage."]
 
 
-def test_sankey_is_the_only_type_of_system_kind() -> None:
-    assert CHART_TYPES["system"] == ("sankey",)
+def test_sankey_and_bus_balance_are_the_types_of_system_kind() -> None:
+    assert CHART_TYPES["system"] == ("sankey", "bus_balance")
 
 
 def test_sankey_bus_filter_not_in_datapackage_is_noticed() -> None:
@@ -474,3 +475,99 @@ def test_sankey_bus_filter_not_in_datapackage_is_noticed() -> None:
 
     assert sankey_links(figure.data[0]) == {}
     assert notices == ["Bus gas isn't in the Datapackage."]
+
+
+def stacks(figure: go.Figure) -> list[tuple[str, list[float]]]:
+    """Stacked traces of a Bus balance as (name, values), in drawing order."""
+    return [(trace.name, list(trace.y)) for trace in figure.data if trace.stackgroup]
+
+
+def test_bus_balance_stacks_incoming_flows_above_zero_and_outgoing_below_labelled_by_other_node() -> None:
+    result = flows(**{"pv-el": [3.0, 1.0], "el-demand": [2.0, 0.5], "el-hp": [1.0, 0.5]})
+
+    figure, notices = bus_balance({"base": result}, TWO_BUSES, "el")
+
+    assert stacks(figure) == [("pv", [3.0, 1.0]), ("demand", [-2.0, -0.5]), ("hp", [-1.0, -0.5])]
+    assert len({trace.stackgroup for trace in figure.data}) == 2  # in and out stack apart
+    assert notices == []
+
+
+WIND_PV_BUS = package_of(["el"], [("wind", "el"), ("pv", "el"), ("demand", "el")])
+
+
+def test_bus_balance_stacks_by_flow_sum_over_the_result_selection_in_one_subplot_per_result() -> None:
+    results = {
+        "base": flows(**{"wind-el": [2.0], "pv-el": [1.0], "el-demand": [3.0]}),
+        "variant": flows(**{"wind-el": [1.0], "pv-el": [5.0], "el-demand": [6.0]}),
+    }
+
+    figure, _ = bus_balance(results, WIND_PV_BUS, "el")
+
+    # Σ over both Results: demand 9, pv 6, wind 3, though wind is larger than pv in base
+    assert [name for name, _ in stacks(figure)] == ["demand", "pv", "wind"] * 2
+    assert [trace.yaxis for trace in figure.data] == ["y"] * 3 + ["y2"] * 3
+    assert [annotation.text for annotation in figure.layout.annotations] == ["base", "variant"]
+    colours = [trace.line.color for trace in figure.data]
+    assert colours == PALETTE[:3] * 2
+    assert [trace.showlegend is not False for trace in figure.data] == [True] * 3 + [False] * 3
+
+
+def test_balanced_bus_has_no_residual(adlershof: Result, adlershof_package: datapackage.Datapackage) -> None:
+    figure, notices = bus_balance({"adlershof": adlershof}, adlershof_package, "electricity")
+
+    assert len(figure.data) == 27  # every Flow from or to electricity
+    assert all(trace.stackgroup for trace in figure.data)
+    assert notices == []
+
+
+@pytest.mark.parametrize(("demand", "residual"), [(999_999.5, None), (999_998.0, [2.0, 0.0])])
+def test_residual_is_drawn_only_above_a_millionth_of_the_largest_flow(demand: float, residual: list | None) -> None:
+    result = flows(**{"pv-el": [1_000_000.0, 1.0], "el-demand": [demand, 1.0]})
+
+    figure, _ = bus_balance({"base": result}, TWO_BUSES, "el")
+
+    lines = [list(trace.y) for trace in figure.data if trace.name == "residual" and not trace.stackgroup]
+    assert lines == ([residual] if residual else [])
+
+
+def test_bus_balance_of_bus_not_in_datapackage_is_missing() -> None:
+    figure, notices = bus_balance({"base": flows(**{"pv-el": [1.0]})}, TWO_BUSES, "gas")
+
+    assert figure.data == ()
+    assert notices == ["Bus gas (missing): not in the Datapackage."]
+
+
+def test_bus_balance_of_result_without_flows_of_the_bus_is_empty_subplot_with_notice() -> None:
+    results = {"base": flows(**{"pv-el": [1.0], "el-demand": [1.0]}), "variant": flows(**{"hp-heat": [1.0]})}
+
+    figure, notices = bus_balance(results, TWO_BUSES, "el")
+
+    assert [trace.yaxis for trace in figure.data] == ["y", "y"]
+    assert [annotation.text for annotation in figure.layout.annotations] == ["base", "variant"]
+    assert notices == ["variant: no Flows of el (missing)"]
+
+
+def test_bus_balance_counts_flows_not_in_datapackage_and_lists_unmatched_entries_and_flows_without_flow() -> None:
+    # heat-el has no Connection; el-nowhere doesn't split into two Datapackage names; el-demand has no `flow`
+    result = flows(**{"pv-el": [3.0], "heat-el": [1.0], "el-nowhere": [2.0], "el-demand": []})
+
+    figure, notices = bus_balance({"base": result}, TWO_BUSES, "el")
+
+    assert stacks(figure) == [("pv", [3.0]), ("heat", [1.0])]
+    assert notices == ["base: no flow for el-demand", "base: unmatched, left out: el-nowhere"]
+
+
+def test_bus_balance_chart_is_titled_after_its_bus() -> None:
+    result = flows(**{"pv-el": [1.0], "el-demand": [1.0]})
+
+    figure, _ = chart_figure(system(type="bus_balance", bus="el"), {"base": result}, package=TWO_BUSES)
+
+    assert stacks(figure) == [("pv", [1.0]), ("demand", [-1.0])]
+    assert figure.layout.title.text == "Bus balance · el"
+
+
+def test_bus_balance_chart_without_datapackage_is_empty_with_notice() -> None:
+    figure, notices = chart_figure(system(type="bus_balance", bus="el"), {"base": flows(**{"pv-el": [1.0]})})
+
+    assert figure.data == ()
+    assert notices == ["Bus balance needs a selected Datapackage."]

@@ -24,6 +24,7 @@ EXPLORER_IDS = [
     "add-chart",
     "sankey-bus",
     "add-sankey",
+    "add-bus-balance",
     "graph",
     "charts",
     "charts-store",
@@ -232,9 +233,22 @@ class Page:
             )
         )
 
+    def add_system(self, button: str, bus: str | None = None, inspector_bus: str | None = None) -> None:
+        """Pick a Bus in the left pane and click "Add Sankey" or "Add Bus balance" there, or click "Add Bus balance"
+        in the inspector of `inspector_bus` (`button` "bus-balance")."""
+        inputs: dict[str, object] = {"add-sankey.n_clicks": None, "add-bus-balance.n_clicks": None, "bus-balance": []}
+        changed = [f"{button}.n_clicks"]
+        if inspector_bus:
+            component_id = {"type": "bus-balance", "bus": inspector_bus}
+            inputs["bus-balance"] = [{"id": component_id, "property": "n_clicks", "value": 1}]
+            changed = [f"{pattern(component_id)}.n_clicks"]
+        else:
+            inputs[f"{button}.n_clicks"] = 1
+        self.apply(fire(self.app, inputs, {"sankey-bus.value": bus, **self.states()}, changed))
+
     def add_sankey(self, bus: str | None = None) -> None:
         """Pick a Bus filter, or none for the whole system, and click "Add Sankey"."""
-        self.apply(fire(self.app, {"add-sankey.n_clicks": 1}, {"sankey-bus.value": bus, **self.states()}))
+        self.add_system("add-sankey", bus)
 
     def edit(self, field: str, chart: int, value: object) -> None:
         """Set a card's title, type, width, series or Bus control."""
@@ -735,3 +749,44 @@ def test_sankey_without_datapackage_shows_notice(page: Page) -> None:
     page.rerender()
 
     assert "Sankey needs a selected Datapackage." in json.dumps(page.cards, ensure_ascii=False)
+
+
+def test_inspector_of_a_bus_offers_add_bus_balance(two_results: tuple) -> None:
+    package, results = two_results
+
+    assert json.dumps({"type": "bus-balance", "bus": "el"}) in rendered(inspector(package, "el", results))
+    assert '"bus-balance"' not in rendered(inspector(package, "pv", results))
+
+
+def test_add_bus_balance_in_inspector_adds_a_bus_balance_of_that_bus(page: Page) -> None:
+    page.add_system("bus-balance", inspector_bus="gas")
+
+    (chart,) = page.charts
+    assert (chart["kind"], chart["type"], chart["bus"]) == ("system", "bus_balance", "gas")
+    card = json.dumps(page.cards, ensure_ascii=False)
+    assert "Bus balance · gas" in card
+    assert '"options": ["bus_balance"]' in card  # can't switch to Sankey
+
+
+def test_rendering_add_bus_balance_buttons_adds_no_chart(page: Page) -> None:
+    button = {"type": "bus-balance", "bus": "gas"}
+    inputs = {
+        "add-sankey.n_clicks": None,
+        "add-bus-balance.n_clicks": None,
+        "bus-balance": [{"id": button, "property": "n_clicks", "value": None}],
+    }
+
+    response = fire(page.app, inputs, {"sankey-bus.value": None, **page.states()}, [f"{pattern(button)}.n_clicks"])
+
+    assert response == {}
+
+
+def test_add_bus_balance_in_left_pane_adds_a_bus_balance_of_the_picked_bus(page: Page) -> None:
+    page.add_system("add-bus-balance", "electricity")
+
+    assert [(chart["type"], chart["bus"]) for chart in page.charts] == [("bus_balance", "electricity")]
+
+
+@pytest.mark.parametrize(("bus", "disabled"), [(None, True), ("gas", False)])
+def test_add_bus_balance_in_left_pane_needs_a_picked_bus(adlershof_app: Dash, bus: str | None, disabled: bool) -> None:
+    assert fire(adlershof_app, {"sankey-bus.value": bus})["add-bus-balance"]["disabled"] is disabled

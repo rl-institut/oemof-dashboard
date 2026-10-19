@@ -185,6 +185,7 @@ def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Re
     return [
         html.H4(name),
         html.Div(f"type: {node.type} · resource: {node.resource}"),
+        *([html.Button("Add Bus balance", id={"type": "bus-balance", "bus": name})] if name in package.buses else []),
         html.Label("Connections"),
         html.Div([node_link(neighbour) for neighbour in neighbours] or "–"),
         html.Label("Parameters"),
@@ -252,7 +253,8 @@ def chart_card(
                     ),
                     dcc.Dropdown(
                         id=field("type"),
-                        options=CHART_TYPES[chart["kind"]],
+                        # A Sankey and a Bus balance read `bus` differently, so system charts keep their type.
+                        options=[chart["type"]] if chart["kind"] == "system" else CHART_TYPES[chart["kind"]],
                         value=chart["type"],
                         clearable=False,
                         className="chart-select",
@@ -276,6 +278,7 @@ def chart_card(
                         options=list(package.buses) if package else [],
                         value=chart.get("bus"),
                         placeholder="(whole system)",
+                        clearable=chart["type"] == "sankey",  # a Bus balance needs its Bus
                     )
                 ]
                 if chart["kind"] == "system"
@@ -362,9 +365,10 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                         ),
                         html.Button("Add chart", id="add-chart"),
                         html.Hr(),
-                        html.Label("Sankey", htmlFor="sankey-bus"),
+                        html.Label("Sankey / Bus balance", htmlFor="sankey-bus"),
                         dcc.Dropdown(id="sankey-bus", options=[], placeholder="(whole system)", disabled=True),
                         html.Button("Add Sankey", id="add-sankey", disabled=True),
+                        html.Button("Add Bus balance", id="add-bus-balance", disabled=True),
                     ],
                 ),
                 html.Div(
@@ -568,23 +572,39 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         buses = list(datapackage.read(datapackages / name).buses) if name else []
         return buses, None, not name, not name
 
+    @app.callback(Output("add-bus-balance", "disabled"), Input("sankey-bus", "value"))
+    def offer_bus_balance(bus: str | None) -> bool:
+        return not bus
+
     @app.callback(
         Output("charts-store", "data", allow_duplicate=True),
         Output("charts", "children", allow_duplicate=True),
         Input("add-sankey", "n_clicks"),
+        Input("add-bus-balance", "n_clicks"),
+        Input({"type": "bus-balance", "bus": ALL}, "n_clicks"),
         State("sankey-bus", "value"),
         State("charts-store", "data"),
         State("result-selection", "value"),
         State("datapackage", "value"),
         prevent_initial_call=True,
     )
-    def add_sankey(
-        _clicks: int | None, bus: str | None, _charts: list[Chart], selection: list[str] | None, name: str | None
+    def add_system_chart(
+        _sankey_clicks: int | None,
+        _balance_clicks: int | None,
+        _inspector_clicks: list[int | None],
+        bus: str | None,
+        _charts: list[Chart],
+        selection: list[str] | None,
+        name: str | None,
     ) -> tuple:
+        if isinstance(ctx.triggered_id, dict):
+            if not ctx.triggered[0]["value"]:
+                raise PreventUpdate  # new "Add Bus balance" button rendered, not clicked
+            bus = ctx.triggered_id["bus"]
         new: Chart = {
             "id": uuid.uuid4().hex,
             "kind": "system",
-            "type": "sankey",
+            "type": "sankey" if ctx.triggered_id == "add-sankey" else "bus_balance",
             "title": None,
             "series": [],
             "colours": {},

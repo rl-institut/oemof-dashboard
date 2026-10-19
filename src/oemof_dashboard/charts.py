@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from oemof_dashboard.datapackage import Datapackage
-from oemof_dashboard.matching import match
+from oemof_dashboard.matching import Matching, match
 from oemof_dashboard.result import Result, ResultEntry
 
 # Validated categorical palette (light mode), fixed order; colour encodes Entry×variable / Input Sequence, never
@@ -19,7 +19,12 @@ PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6
 DASHES = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
 MAX_DISTINCT_RESULTS = 4
 # Chart types per kind; a chart's kind is fixed at creation, its type switches within the kind.
-CHART_TYPES = {"sequences": ("line", "stacked_area", "duration_curve"), "scalars": ("bar",), "system": ("sankey",)}
+CHART_TYPES = {
+    "sequences": ("line", "stacked_area", "duration_curve"),
+    "scalars": ("bar",),
+    "system": ("sankey", "bus_balance"),
+}
+SYSTEM_NAMES = {"sankey": "Sankey", "bus_balance": "Bus balance"}
 MAX_TITLE_SERIES = 3
 # Browsers cap live WebGL contexts (~8–16); beyond that charts go blank.
 WEBGL_TYPES = {"line", "duration_curve"}
@@ -30,20 +35,23 @@ INPUT_PREFIX = "input:"
 NO_BUS_COLOUR = "#8a9bb0"
 LINK_OPACITY = "80"  # hex alpha appended to a link's colour
 SANKEY_GAP = 0.02  # paper width between side-by-side Sankeys
-NO_PACKAGE = "Sankey needs a selected Datapackage."
+# A Bus balance draws its residual only beyond this share of its largest Flow value: solvers leave rounding noise.
+RESIDUAL_TOLERANCE = 1e-6
+RESIDUAL_COLOUR = "#1f1f1f"
 
 
 class Chart(TypedDict):
     """Chart config as kept in the charts store (JSON).
 
     `series` holds Outcomes as [Result Entry, variable] and, in sequence charts only, Input Sequences as
-    [Datapackage, resource, column]; system charts have none but an optional `bus` filter instead;
-    `colours` maps a series key (see `series_key`) to a hex colour overriding the palette; `title` None means auto.
+    [Datapackage, resource, column]; system charts have none but a `bus` instead: an optional filter of a Sankey,
+    the balanced Bus of a Bus balance; `colours` maps a series key (see `series_key`) to a hex colour overriding the
+    palette; `title` None means auto.
     """
 
     id: str
     kind: Literal["sequences", "scalars", "system"]
-    type: Literal["line", "stacked_area", "duration_curve", "bar", "sankey"]
+    type: Literal["line", "stacked_area", "duration_curve", "bar", "sankey", "bus_balance"]
     title: str | None
     series: list[list[str]]
     colours: dict[str, str]
@@ -98,10 +106,10 @@ def auto_title(chart: Chart) -> str:
 
     Returns:
         Title such as "bhkw-electricity · flow, wind-electricity · flow +2", or "Empty chart" without series;
-        "Sankey" or "Sankey · <Bus>" for a Sankey.
+        "Sankey" or "Sankey · <Bus>" for a Sankey, "Bus balance · <Bus>" for a Bus balance.
     """
     if chart["kind"] == "system":
-        return " · ".join(filter(None, ("Sankey", chart.get("bus"))))
+        return " · ".join(filter(None, (SYSTEM_NAMES[chart["type"]], chart.get("bus"))))
     series = chart["series"]
     if not series:
         return "Empty chart"
@@ -133,8 +141,12 @@ def chart_figure(
     if chart["type"] not in CHART_TYPES.get(chart["kind"], ()):
         raise ValueError(f"Chart type {chart['type']!r} isn't of kind {chart['kind']!r}")
     series = [tuple(item) for item in chart["series"]]
-    if chart["type"] == "sankey":
-        figure, notices = sankey(results, package, chart.get("bus")) if package else (go.Figure(), [NO_PACKAGE])
+    if chart["kind"] == "system" and not package:
+        figure, notices = go.Figure(), [f"{SYSTEM_NAMES[chart['type']]} needs a selected Datapackage."]
+    elif chart["type"] == "sankey":
+        figure, notices = sankey(results, package, chart.get("bus"))
+    elif chart["type"] == "bus_balance":
+        figure, notices = bus_balance(results, package, chart.get("bus"))
     elif chart["type"] == "bar":
         figure, notices = bar_chart(series, results, chart["colours"])
     else:
@@ -309,18 +321,21 @@ def bar_chart(
     return figure, []
 
 
-def _flow_sums(result: Result, package: Datapackage, bus: str | None) -> tuple[list[tuple[str, str, float]], list[str]]:
-    # (source, target, Σ flow) per Flow from or to `bus` (any if None), and the Result Entries of Flows without `flow`.
-    sums, without = [], []
-    for entry, (source, target) in match(result, package).matched.items():
+def _flows(
+    result: Result, matching: Matching, bus: str | None
+) -> tuple[dict[str, tuple[str, str, pd.Series]], list[str]]:
+    # (source, target, `flow`) by Result Entry per Flow from or to `bus` (any if None), and the Result Entries of
+    # Flows without `flow`.
+    found, without = {}, []
+    for entry, (source, target) in matching.matched.items():
         if target is None or (bus is not None and bus not in (source, target)):
             continue
         sequences = result.entries[entry].sequences
         if "flow" not in sequences.columns:
             without.append(entry)
             continue
-        sums.append((source, target, float(sequences["flow"].sum())))  # pandas skips NaN, e.g. the trailing row
-    return sums, without
+        found[entry] = (source, target, sequences["flow"])
+    return found, without
 
 
 def sankey(results: dict[str, Result], package: Datapackage, bus: str | None = None) -> tuple[go.Figure, list[str]]:
@@ -345,7 +360,9 @@ def sankey(results: dict[str, Result], package: Datapackage, bus: str | None = N
     width = 1 / max(len(results), 1)
     notices = [f"Bus {bus} isn't in the Datapackage."] if bus is not None and bus not in package.buses else []
     for result_index, (result_name, result) in enumerate(results.items()):
-        sums, without = _flow_sums(result, package, bus)
+        found, without = _flows(result, match(result, package), bus)
+        # pandas skips NaN, e.g. the trailing row
+        sums = [(source, target, float(flow.sum())) for source, target, flow in found.values()]
         if without:
             notices.append(f"{result_name}: no flow for {', '.join(sorted(without))}")
         nodes = list(dict.fromkeys(name for source, target, _ in sums for name in (source, target)))
@@ -372,6 +389,96 @@ def sankey(results: dict[str, Result], package: Datapackage, bus: str | None = N
             text=result_name, x=left + width / 2, y=1, xref="paper", yref="paper", yanchor="bottom", showarrow=False
         )
     return figure, notices
+
+
+def bus_balance(results: dict[str, Result], package: Datapackage, bus: str) -> tuple[go.Figure, list[str]]:
+    """Build the balance of one Bus with one subplot per Result in the Result Selection.
+
+    Args:
+        results: Result Selection as Result name → Result, one subplot each, top to bottom.
+        package: Datapackage the Result Entries are matched against.
+        bus: Bus to balance.
+
+    Returns:
+        Figure with one stacked `Scatter` trace of `flow` per Flow to the Bus (positive, stacked above zero) and
+        from it (negative, stacked below), labelled with the other node, also if the Flow isn't in the Datapackage.
+        Flows are coloured and stacked by Σ flow over the Result Selection, descending, alike in every subplot;
+        subplots share both axes and are titled with the Result. A dotted residual Σin − Σout is drawn where its
+        max |value| exceeds `RESIDUAL_TOLERANCE` × the largest Flow value of that Result. Notices list a Bus not in the Datapackage
+        (no traces then) and, per Result, Flows without `flow`, unmatched Result Entries and a Bus without Flows.
+    """
+    figure = make_subplots(rows=max(len(results), 1), cols=1, shared_xaxes=True, subplot_titles=list(results))
+    figure.update_yaxes(matches="y")
+    figure.update_layout(margin={"l": 40, "r": 10, "t": 10, "b": 30})
+    if bus not in package.buses:
+        return figure, [f"Bus {bus} (missing): not in the Datapackage."]
+    flows_by_result, notices = _bus_flows(results, package, bus)
+    totals: dict[str, float] = {}
+    for flows in flows_by_result.values():
+        for entry, (_, _, flow) in flows.items():
+            totals[entry] = totals.get(entry, 0.0) + flow.sum()
+    order = sorted(totals, key=totals.__getitem__, reverse=True)
+    shown = set()
+    for row, flows in enumerate(flows_by_result.values(), start=1):
+        signed = []
+        for index, entry in enumerate(order):
+            if entry not in flows:
+                continue
+            source, target, flow = flows[entry]
+            incoming = target == bus
+            signed_flow = flow if incoming else -flow
+            signed.append(signed_flow)
+            figure.add_trace(
+                go.Scatter(
+                    x=flow.index,
+                    y=signed_flow.to_numpy(),
+                    name=source if incoming else target,
+                    mode="lines",
+                    line={"color": PALETTE[index % len(PALETTE)]},
+                    stackgroup=f"{'in' if incoming else 'out'}{row}",
+                    legendgroup=entry,
+                    showlegend=entry not in shown,
+                ),
+                row=row,
+                col=1,
+            )
+            shown.add(entry)
+        if not signed:
+            continue
+        residual = pd.concat(signed, axis=1).sum(axis=1)  # Σin − Σout; pandas skips NaN
+        if residual.abs().max() > RESIDUAL_TOLERANCE * max(flow.abs().max() for flow in signed):
+            figure.add_trace(
+                go.Scatter(
+                    x=residual.index,
+                    y=residual.to_numpy(),
+                    name="residual",
+                    mode="lines",
+                    line={"color": RESIDUAL_COLOUR, "dash": "dot"},
+                    legendgroup="residual",
+                    showlegend="residual" not in shown,
+                ),
+                row=row,
+                col=1,
+            )
+            shown.add("residual")
+    return figure, notices
+
+
+def _bus_flows(
+    results: dict[str, Result], package: Datapackage, bus: str
+) -> tuple[dict[str, dict[str, tuple[str, str, pd.Series]]], list[str]]:
+    # Flows from or to `bus` by Result name as `_flows` gives them, and the notices of a Bus balance on them.
+    flows_by_result, notices = {}, []
+    for name, result in results.items():
+        matching = match(result, package)
+        flows, without = _flows(result, matching, bus)
+        flows_by_result[name] = flows
+        # A Flow not in the Datapackage is matched and counted, though also listed as unmatched.
+        unmatched = sorted(matching.unmatched.keys() - matching.matched.keys())
+        notices += [f"{name}: no flow for {', '.join(sorted(without))}"] if without else []
+        notices += [f"{name}: unmatched, left out: {', '.join(unmatched)}"] if unmatched else []
+        notices += [] if flows or without else [f"{name}: no Flows of {bus} (missing)"]
+    return flows_by_result, notices
 
 
 def webgl_warning(charts: list[Chart]) -> str | None:
