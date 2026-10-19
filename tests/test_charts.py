@@ -1,9 +1,21 @@
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 import pytest
+from conftest import package_of
 
-from oemof_dashboard.charts import CHART_TYPES, Chart, auto_title, chart_figure, line_chart, webgl_warning
+from oemof_dashboard import datapackage
+from oemof_dashboard.charts import (
+    CHART_TYPES,
+    PALETTE,
+    Chart,
+    auto_title,
+    chart_figure,
+    line_chart,
+    sankey,
+    webgl_warning,
+)
 from oemof_dashboard.result import Result, ResultEntry, read
 
 BHKW_FLOW = ("bhkw-electricity", "flow")
@@ -252,7 +264,7 @@ def test_colour_override_applies_to_input_sequence(adlershof: Result) -> None:
 
 
 def test_auto_title_names_input_sequences() -> None:
-    assert auto_title([list(HEAT_DEMAND)]) == "adlershof · demands_profile · heat_central-residential"
+    assert auto_title(chart(series=[list(HEAT_DEMAND)])) == "adlershof · demands_profile · heat_central-residential"
 
 
 def scalars_result(**scalars: float) -> Result:
@@ -324,3 +336,141 @@ def test_type_must_belong_to_kind(kind: str, chart_type: str) -> None:
 
 def test_bar_charts_are_not_webgl() -> None:
     assert webgl_warning([bar(id=str(index)) for index in range(9)]) is None
+
+
+@pytest.fixture
+def adlershof_package(shipped_data: Path) -> datapackage.Datapackage:
+    return datapackage.read(shipped_data / "datapackages" / "adlershof")
+
+
+def sankey_links(trace: go.Sankey) -> dict[tuple[str, str], float]:
+    """Links of a Sankey trace as (source, target) node label → value."""
+    labels = trace.node.label
+    return {
+        (labels[source], labels[target]): value
+        for source, target, value in zip(trace.link.source, trace.link.target, trace.link.value, strict=True)
+    }
+
+
+def test_sankey_links_every_flow_of_the_system_with_its_summed_flow(
+    adlershof: Result, adlershof_package: datapackage.Datapackage
+) -> None:
+    figure, notices = sankey({"adlershof": adlershof}, adlershof_package)
+
+    (trace,) = figure.data
+    assert trace.type == "sankey"
+    links = sankey_links(trace)
+    assert len(links) == 80  # every Flow file of the shipped Result
+    assert links[("gas-import", "gas")] == pytest.approx(83725062.81)
+    assert links[("gas", "heat_decentral-gas_boiler")] == pytest.approx(83725062.81)
+    assert links[("bhkw", "electricity")] == 0.0
+    assert "Σ flow" in trace.link.hovertemplate
+    assert notices == []
+
+
+def flows(**flow_values: list[float]) -> Result:
+    """Result with these Result Entries, each holding a `flow` Result Sequence; an empty list gives no `flow`."""
+    return Result(
+        {
+            entry: ResultEntry(
+                sequences=pd.DataFrame(
+                    {"flow": values}, index=pd.date_range("2050-01-01", periods=len(values), freq="h")
+                )
+                if values
+                else pd.DataFrame()
+            )
+            for entry, values in flow_values.items()
+        }
+    )
+
+
+TWO_BUSES = package_of(["el", "heat"], [("pv", "el"), ("demand", "el"), ("hp", "el"), ("hp", "heat")])
+
+
+def test_sankey_drops_trailing_nan_and_lists_flows_without_flow_in_a_notice() -> None:
+    result = flows(**{"pv-el": [1.0, 2.0, float("nan")], "el-demand": [], "el-hp": []})
+
+    figure, notices = sankey({"base": result}, TWO_BUSES)
+
+    assert sankey_links(figure.data[0]) == {("pv", "el"): 3.0}
+    assert notices == ["base: no flow for el-demand, el-hp"]
+
+
+def test_sankey_bus_filter_keeps_flows_from_or_to_that_bus(
+    adlershof: Result, adlershof_package: datapackage.Datapackage
+) -> None:
+    figure, _ = sankey({"adlershof": adlershof}, adlershof_package, bus="gas")
+
+    assert set(sankey_links(figure.data[0])) == {
+        ("gas", "bhkw"),
+        ("gas", "gas-excess"),
+        ("gas", "heat_central-gas_boiler"),
+        ("gas", "heat_decentral-gas_boiler"),
+        ("gas-import", "gas"),
+        ("gas-shortage", "gas"),
+    }
+
+
+def test_sankey_bus_filter_lists_only_that_bus_flows_without_flow() -> None:
+    result = flows(**{"pv-el": [1.0], "el-hp": [], "hp-heat": []})
+
+    _, notices = sankey({"base": result}, TWO_BUSES, bus="heat")
+
+    assert notices == ["base: no flow for hp-heat"]
+
+
+def test_sankey_per_result_side_by_side_titled_with_the_result() -> None:
+    results = {"base": flows(**{"pv-el": [1.0]}), "variant": flows(**{"pv-el": [2.0]})}
+
+    figure, _ = sankey(results, TWO_BUSES)
+
+    assert [sankey_links(trace) for trace in figure.data] == [{("pv", "el"): 1.0}, {("pv", "el"): 2.0}]
+    (left, middle), (start, right) = (trace.domain.x for trace in figure.data)
+    assert 0 <= left < middle <= start < right <= 1
+    assert [annotation.text for annotation in figure.layout.annotations] == ["base", "variant"]
+
+
+def test_sankey_colours_buses_by_datapackage_order_links_by_their_bus_components_by_first_connection() -> None:
+    result = flows(**{"hp-heat": [1.0], "el-hp": [1.0], "pv-el": [1.0]})
+
+    (trace,) = sankey({"base": result}, TWO_BUSES)[0].data
+
+    colours = dict(zip(trace.node.label, trace.node.color, strict=True))
+    assert colours["el"] == PALETTE[0]
+    assert colours["heat"] == PALETTE[1]
+    assert colours["pv"] == PALETTE[0]
+    assert colours["hp"] == PALETTE[0]  # first Connection is to el, though its first link is to heat
+    assert list(trace.link.color) == [f"{PALETTE[1]}80", f"{PALETTE[0]}80", f"{PALETTE[0]}80"]
+
+
+def system(**overrides: object) -> Chart:
+    """Sankey chart of the whole system, overridden per test."""
+    return chart(kind="system", type="sankey", series=[]) | overrides
+
+
+@pytest.mark.parametrize(("bus", "title", "link_count"), [(None, "Sankey", 3), ("heat", "Sankey · heat", 1)])
+def test_sankey_chart_filters_by_its_bus_and_is_titled_after_it(bus: str | None, title: str, link_count: int) -> None:
+    result = flows(**{"hp-heat": [1.0], "el-hp": [1.0], "pv-el": [1.0]})
+
+    figure, _ = chart_figure(system(bus=bus), {"base": result}, package=TWO_BUSES)
+
+    assert len(sankey_links(figure.data[0])) == link_count
+    assert figure.layout.title.text == title
+
+
+def test_sankey_chart_without_datapackage_is_empty_with_notice() -> None:
+    figure, notices = chart_figure(system(), {"base": flows(**{"pv-el": [1.0]})})
+
+    assert figure.data == ()
+    assert notices == ["Sankey needs a selected Datapackage."]
+
+
+def test_sankey_is_the_only_type_of_system_kind() -> None:
+    assert CHART_TYPES["system"] == ("sankey",)
+
+
+def test_sankey_bus_filter_not_in_datapackage_is_noticed() -> None:
+    figure, notices = sankey({"base": flows(**{"pv-el": [1.0]})}, TWO_BUSES, bus="gas")
+
+    assert sankey_links(figure.data[0]) == {}
+    assert notices == ["Bus gas isn't in the Datapackage."]

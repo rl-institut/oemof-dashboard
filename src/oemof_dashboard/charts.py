@@ -1,13 +1,15 @@
 """Pure figure builders: Outcomes × Result Selection → plotly figure plus notices. No Dash imports."""
 
 from collections.abc import Iterator
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from oemof_dashboard.datapackage import Datapackage
+from oemof_dashboard.matching import match
 from oemof_dashboard.result import Result, ResultEntry
 
 # Validated categorical palette (light mode), fixed order; colour encodes Entry×variable / Input Sequence, never
@@ -17,30 +19,36 @@ PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6
 DASHES = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
 MAX_DISTINCT_RESULTS = 4
 # Chart types per kind; a chart's kind is fixed at creation, its type switches within the kind.
-CHART_TYPES = {"sequences": ("line", "stacked_area", "duration_curve"), "scalars": ("bar",)}
+CHART_TYPES = {"sequences": ("line", "stacked_area", "duration_curve"), "scalars": ("bar",), "system": ("sankey",)}
 MAX_TITLE_SERIES = 3
 # Browsers cap live WebGL contexts (~8–16); beyond that charts go blank.
 WEBGL_TYPES = {"line", "duration_curve"}
 MAX_WEBGL_CHARTS = 8
 # Prefix of an Input Sequence's series key; Outcome keys are "<Result Entry>/<variable>".
 INPUT_PREFIX = "input:"
+# Sankey colour of a Flow without a Bus end, or a Component without a Connection.
+NO_BUS_COLOUR = "#8a9bb0"
+LINK_OPACITY = "80"  # hex alpha appended to a link's colour
+SANKEY_GAP = 0.02  # paper width between side-by-side Sankeys
+NO_PACKAGE = "Sankey needs a selected Datapackage."
 
 
 class Chart(TypedDict):
     """Chart config as kept in the charts store (JSON).
 
     `series` holds Outcomes as [Result Entry, variable] and, in sequence charts only, Input Sequences as
-    [Datapackage, resource, column];
+    [Datapackage, resource, column]; system charts have none but an optional `bus` filter instead;
     `colours` maps a series key (see `series_key`) to a hex colour overriding the palette; `title` None means auto.
     """
 
     id: str
-    kind: Literal["sequences", "scalars"]
-    type: Literal["line", "stacked_area", "duration_curve", "bar"]
+    kind: Literal["sequences", "scalars", "system"]
+    type: Literal["line", "stacked_area", "duration_curve", "bar", "sankey"]
     title: str | None
     series: list[list[str]]
     colours: dict[str, str]
     width: Literal["half", "full"]
+    bus: NotRequired[str | None]
 
 
 def series_key(item: list[str] | tuple[str, ...]) -> str:
@@ -82,15 +90,19 @@ def series_label(item: list[str] | tuple[str, ...]) -> str:
     return " · ".join(item)
 
 
-def auto_title(series: list[list[str]]) -> str:
-    """Auto title of a chart from its first series items.
+def auto_title(chart: Chart) -> str:
+    """Auto title of a chart from its first series items, or its Bus filter.
 
     Args:
-        series: Outcomes and Input Sequences as stored in a chart.
+        chart: Chart config.
 
     Returns:
-        Title such as "bhkw-electricity · flow, wind-electricity · flow +2", or "Empty chart" without series.
+        Title such as "bhkw-electricity · flow, wind-electricity · flow +2", or "Empty chart" without series;
+        "Sankey" or "Sankey · <Bus>" for a Sankey.
     """
+    if chart["kind"] == "system":
+        return " · ".join(filter(None, ("Sankey", chart.get("bus"))))
+    series = chart["series"]
     if not series:
         return "Empty chart"
     title = ", ".join(map(series_label, series[:MAX_TITLE_SERIES]))
@@ -99,7 +111,10 @@ def auto_title(series: list[list[str]]) -> str:
 
 
 def chart_figure(
-    chart: Chart, results: dict[str, Result], inputs: dict[tuple[str, str, str], pd.Series] | None = None
+    chart: Chart,
+    results: dict[str, Result],
+    inputs: dict[tuple[str, str, str], pd.Series] | None = None,
+    package: Datapackage | None = None,
 ) -> tuple[go.Figure, list[str]]:
     """Build the figure of one chart for the Result Selection.
 
@@ -107,6 +122,7 @@ def chart_figure(
         chart: Chart config.
         results: Result Selection as Result name → Result.
         inputs: Loaded Input Sequences by (Datapackage, resource, column); series not in it show as missing.
+        package: Selected Datapackage, needed by system charts; None if none is selected.
 
     Returns:
         Figure titled with the chart's title, or the auto title if unset. Notices to show with it.
@@ -117,12 +133,14 @@ def chart_figure(
     if chart["type"] not in CHART_TYPES.get(chart["kind"], ()):
         raise ValueError(f"Chart type {chart['type']!r} isn't of kind {chart['kind']!r}")
     series = [tuple(item) for item in chart["series"]]
-    if chart["type"] == "bar":
+    if chart["type"] == "sankey":
+        figure, notices = sankey(results, package, chart.get("bus")) if package else (go.Figure(), [NO_PACKAGE])
+    elif chart["type"] == "bar":
         figure, notices = bar_chart(series, results, chart["colours"])
     else:
         builder = {"line": line_chart, "stacked_area": stacked_area, "duration_curve": duration_curve}[chart["type"]]
         figure, notices = builder(series, results, chart["colours"], inputs)
-    figure.update_layout(title_text=chart["title"] or auto_title(chart["series"]), margin_t=30)
+    figure.update_layout(title_text=chart["title"] or auto_title(chart), margin_t=30)
     return figure, notices
 
 
@@ -289,6 +307,71 @@ def bar_chart(
         for name in (name for name, value in values.items() if value is None):
             figure.add_trace(go.Bar(x=[None], y=[None], name=f"{label} · {name} (missing)", showlegend=True, **style))
     return figure, []
+
+
+def _flow_sums(result: Result, package: Datapackage, bus: str | None) -> tuple[list[tuple[str, str, float]], list[str]]:
+    # (source, target, Σ flow) per Flow from or to `bus` (any if None), and the Result Entries of Flows without `flow`.
+    sums, without = [], []
+    for entry, (source, target) in match(result, package).matched.items():
+        if target is None or (bus is not None and bus not in (source, target)):
+            continue
+        sequences = result.entries[entry].sequences
+        if "flow" not in sequences.columns:
+            without.append(entry)
+            continue
+        sums.append((source, target, float(sequences["flow"].sum())))  # pandas skips NaN, e.g. the trailing row
+    return sums, without
+
+
+def sankey(results: dict[str, Result], package: Datapackage, bus: str | None = None) -> tuple[go.Figure, list[str]]:
+    """Build one Sankey of the energy flows per Result in the Result Selection, side by side.
+
+    Args:
+        results: Result Selection as Result name → Result, one Sankey each, left to right.
+        package: Datapackage the Result Entries are matched against.
+        bus: Only Flows from or to this Bus; all Flows if None.
+
+    Returns:
+        Figure with one `Sankey` trace per Result, titled with the Result: nodes are Buses and Components, links
+        are Flows valued with their summed `flow` (NaN dropped). Buses are coloured by palette in Datapackage
+        order; a link takes the colour of its Bus, a Component that of its first Connection's Bus. Notices list a
+        Bus filter not in the Datapackage and, per Result, the Flows without `flow`, which get no link.
+    """
+    figure = go.Figure(layout={"margin": {"l": 10, "r": 10, "t": 10, "b": 10}})
+    bus_colours = {name: PALETTE[index % len(PALETTE)] for index, name in enumerate(package.buses)}
+    component_buses: dict[str, str] = {}
+    for component, connected in package.connections:
+        component_buses.setdefault(component, connected)
+    width = 1 / max(len(results), 1)
+    notices = [f"Bus {bus} isn't in the Datapackage."] if bus is not None and bus not in package.buses else []
+    for result_index, (result_name, result) in enumerate(results.items()):
+        sums, without = _flow_sums(result, package, bus)
+        if without:
+            notices.append(f"{result_name}: no flow for {', '.join(sorted(without))}")
+        nodes = list(dict.fromkeys(name for source, target, _ in sums for name in (source, target)))
+        positions = {name: position for position, name in enumerate(nodes)}
+        node_colours = [
+            bus_colours.get(name) or bus_colours.get(component_buses.get(name), NO_BUS_COLOUR) for name in nodes
+        ]
+        link_colours = [bus_colours.get(source) or bus_colours.get(target, NO_BUS_COLOUR) for source, target, _ in sums]
+        left = result_index * width
+        figure.add_trace(
+            go.Sankey(
+                domain={"x": [left, left + width - SANKEY_GAP]},
+                node={"label": nodes, "color": node_colours},
+                link={
+                    "color": [colour + LINK_OPACITY for colour in link_colours],
+                    "source": [positions[source] for source, _, _ in sums],
+                    "target": [positions[target] for _, target, _ in sums],
+                    "value": [value for _, _, value in sums],
+                    "hovertemplate": "%{source.label} → %{target.label}<br>Σ flow: %{value:,.0f}<extra></extra>",
+                },
+            )
+        )
+        figure.add_annotation(
+            text=result_name, x=left + width / 2, y=1, xref="paper", yref="paper", yanchor="bottom", showarrow=False
+        )
+    return figure, notices
 
 
 def webgl_warning(charts: list[Chart]) -> str | None:

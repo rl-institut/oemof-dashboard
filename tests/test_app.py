@@ -22,6 +22,7 @@ EXPLORER_IDS = [
     "result-selection",
     "outcome-picker",
     "add-chart",
+    "add-sankey",
     "graph",
     "charts",
     "charts-store",
@@ -230,8 +231,12 @@ class Page:
             )
         )
 
+    def add_sankey(self) -> None:
+        """Click "Add Sankey"."""
+        self.apply(fire(self.app, {"add-sankey.n_clicks": 1}, self.states()))
+
     def edit(self, field: str, chart: int, value: object) -> None:
-        """Set a card's title, type, width or series control."""
+        """Set a card's title, type, width, series or Bus control."""
         component_id = {"type": "chart-field", "field": field, "chart": self.charts[chart]["id"]}
         self.trigger({"chart-field": [], "chart-colour": []}, component_id, "value", value)
 
@@ -667,3 +672,47 @@ def test_inspector_add_chart_button_adds_bar_chart_for_scalar(page: Page) -> Non
     page.apply(fire(page.app, inputs, {"outcome-picker.value": None, **page.states()}, [f"{pattern(button)}.n_clicks"]))
 
     assert [(chart["kind"], chart["type"]) for chart in page.charts] == [("scalars", "bar")]
+
+
+@pytest.mark.parametrize(("name", "disabled"), [(None, True), ("adlershof", False)])
+def test_add_sankey_needs_a_selected_datapackage(adlershof_app: Dash, name: str | None, disabled: bool) -> None:
+    assert fire(adlershof_app, {"datapackage.value": name})["add-sankey"]["disabled"] is disabled
+
+
+def test_added_sankey_is_a_system_chart_offering_a_bus_filter_instead_of_series(page: Page) -> None:
+    page.add_sankey()
+
+    (chart,) = page.charts
+    assert chart | {"id": None} == {
+        "id": None,
+        "kind": "system",
+        "type": "sankey",
+        "title": None,
+        "series": [],
+        "colours": {},
+        "width": "half",
+        "bus": None,
+    }
+    card = json.dumps(page.cards, ensure_ascii=False)
+    assert '"type": "sankey"' in card
+    assert '"field": "bus"' in card
+    assert '"options": ["electricity", "heat_central"' in card  # Buses of the Datapackage
+    assert '"field": "series"' not in card
+
+
+def test_picking_a_bus_filters_the_sankey(page: Page) -> None:
+    page.add_sankey()
+
+    page.edit("bus", 0, "gas")
+
+    assert page.charts[0]["bus"] == "gas"
+    assert "Sankey · gas" in json.dumps(page.cards, ensure_ascii=False)
+
+
+def test_sankey_without_datapackage_shows_notice(page: Page) -> None:
+    page.add_sankey()
+
+    page.datapackage = None
+    page.rerender()
+
+    assert "Sankey needs a selected Datapackage." in json.dumps(page.cards, ensure_ascii=False)

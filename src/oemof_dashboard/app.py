@@ -205,14 +205,17 @@ def chart_card(
     results: dict[str, Result],
     input_items: set[tuple[str, str, str]],
     inputs: dict[tuple[str, str, str], pd.Series],
+    package: datapackage.Datapackage | None,
 ) -> html.Div:
-    """Chart card: controls for title, type, width, order and removal; series multi-select; colour overrides; figure.
+    """Chart card: controls for title, type, width, order and removal; series multi-select and colour overrides, or
+    a Bus filter for system charts; figure.
 
     Args:
         chart: Chart config.
         results: Result Selection as Result name → Result.
         input_items: Input Sequences of the selected Datapackage, offered as series of sequence charts.
         inputs: Loaded Input Sequences of the chart by (Datapackage, resource, column).
+        package: Selected Datapackage, offering its Buses as filter of system charts; None if none is selected.
 
     Returns:
         Card whose controls carry pattern-matching ids keyed by the chart id.
@@ -226,7 +229,7 @@ def chart_card(
         offered |= {series_key(item) for item in input_items}
     offered |= set(picked)
     options = [{"label": series_label(series_item(key)), "value": key} for key in sorted(offered)]
-    figure, notices = chart_figure(chart, results, inputs)
+    figure, notices = chart_figure(chart, results, inputs, package)
 
     def field(name: str) -> dict:
         return {"type": "chart-field", "field": name, "chart": chart_id}
@@ -243,7 +246,7 @@ def chart_card(
                     dcc.Input(
                         id=field("title"),
                         value=chart["title"] or "",
-                        placeholder=auto_title(chart["series"]),
+                        placeholder=auto_title(chart),
                         debounce=True,
                         className="chart-title",
                     ),
@@ -266,24 +269,37 @@ def chart_card(
                     action("remove", "×"),
                 ],
             ),
-            dcc.Dropdown(id=field("series"), options=options, value=picked, multi=True),
-            html.Div(
-                className="chart-colours",
-                children=[
-                    html.Label(
-                        [
-                            series_label(series_item(item)),
-                            dcc.Input(
-                                id={"type": "chart-colour", "chart": chart_id, "series": item},
-                                value=chart["colours"].get(item, ""),
-                                placeholder=PALETTE[index % len(PALETTE)],
-                                debounce=True,
-                                className="chart-colour",
-                            ),
-                        ]
+            *(
+                [
+                    dcc.Dropdown(
+                        id=field("bus"),
+                        options=list(package.buses) if package else [],
+                        value=chart.get("bus"),
+                        placeholder="(whole system)",
                     )
-                    for index, item in enumerate(picked)
-                ],
+                ]
+                if chart["kind"] == "system"
+                else [
+                    dcc.Dropdown(id=field("series"), options=options, value=picked, multi=True),
+                    html.Div(
+                        className="chart-colours",
+                        children=[
+                            html.Label(
+                                [
+                                    series_label(series_item(item)),
+                                    dcc.Input(
+                                        id={"type": "chart-colour", "chart": chart_id, "series": item},
+                                        value=chart["colours"].get(item, ""),
+                                        placeholder=PALETTE[index % len(PALETTE)],
+                                        debounce=True,
+                                        className="chart-colour",
+                                    ),
+                                ]
+                            )
+                            for index, item in enumerate(picked)
+                        ],
+                    ),
+                ]
             ),
             *(html.Div(notice, className="notice") for notice in notices),
             dcc.Graph(figure=figure),
@@ -345,6 +361,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                             id="outcome-picker", options=[], multi=True, placeholder="Outcome / Input Sequence…"
                         ),
                         html.Button("Add chart", id="add-chart"),
+                        html.Button("Add Sankey", id="add-sankey", disabled=True),
                     ],
                 ),
                 html.Div(
@@ -385,7 +402,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         wanted = {tuple(item) for chart in charts for item in chart["series"] if tuple(item) in input_items}
         loaded = {item: datapackage.input_sequence(datapackages / name, *item[1:]) for item in wanted}
         inputs = {item: values for item, values in loaded.items() if values is not None}
-        return [chart_card(chart, selected, input_items, inputs) for chart in charts]
+        return [chart_card(chart, selected, input_items, inputs, package) for chart in charts]
 
     def selected_node_names(name: str | None, selected_nodes: list[dict] | None) -> set[str]:
         # Cytoscape may keep a selection from the previous Datapackage; drop names it doesn't have.
@@ -537,6 +554,35 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         cards.extend(chart_cards(new, selection, name))
         return charts, cards
 
+    @app.callback(Output("add-sankey", "disabled"), Input("datapackage", "value"))
+    def offer_sankey(name: str | None) -> bool:
+        return not name
+
+    @app.callback(
+        Output("charts-store", "data", allow_duplicate=True),
+        Output("charts", "children", allow_duplicate=True),
+        Input("add-sankey", "n_clicks"),
+        State("charts-store", "data"),
+        State("result-selection", "value"),
+        State("datapackage", "value"),
+        prevent_initial_call=True,
+    )
+    def add_sankey(_clicks: int | None, _charts: list[Chart], selection: list[str] | None, name: str | None) -> tuple:
+        new: Chart = {
+            "id": uuid.uuid4().hex,
+            "kind": "system",
+            "type": "sankey",
+            "title": None,
+            "series": [],
+            "colours": {},
+            "width": "half",
+            "bus": None,
+        }
+        charts, cards = Patch(), Patch()
+        charts.append(new)
+        cards.extend(chart_cards([new], selection, name))
+        return charts, cards
+
     @app.callback(
         Output("charts-store", "data", allow_duplicate=True),
         Output("charts", "children", allow_duplicate=True),
@@ -568,7 +614,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         elif trigger["field"] == "title":
             chart["title"] = (value or "").strip() or None
         else:
-            chart[trigger["field"]] = value  # type or width, offered by the card's dropdowns
+            chart[trigger["field"]] = value  # type, width or Bus, offered by the card's dropdowns
         patched_charts, cards = Patch(), Patch()
         patched_charts[index] = chart
         (cards[index],) = chart_cards([chart], selection, name)
