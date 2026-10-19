@@ -15,3 +15,11 @@ button { margin-top: 8px; }
 .node-link { margin: 2px 4px 2px 0; padding: 1px 6px; border: none; border-radius: 3px; background: #fbe6d2; color: #8a4510; cursor: pointer; }
 .warning { margin-bottom: 6px; padding: 4px 6px; background: #fff4d6; border-left: 3px solid #e0a800; }
 #inspector td { padding: 1px 6px 1px 0; vertical-align: top; word-break: break-all; }
+.chart-card.full { grid-column: 1 / -1; }
+.chart-controls { display: flex; gap: 4px; align-items: center; }
+.chart-controls > * { flex: none; }
+.chart-controls > .chart-title { flex: 1; min-width: 0; }
+.chart-select { width: 80px; }
+.chart-controls button { margin-top: 0; }
+.chart-colours label { display: inline-block; margin: 4px 8px 0 0; font-weight: normal; }
+.chart-colour { width: 70px; margin-left: 4px; }

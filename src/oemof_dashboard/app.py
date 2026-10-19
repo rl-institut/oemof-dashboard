@@ -1,16 +1,19 @@
 """Dash layout and callbacks of the Explorer."""
 
+import re
+import uuid
 from pathlib import Path
 
 import dash_cytoscape as cyto
-from dash import ALL, Dash, Input, Output, State, ctx, dcc, html
+from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
 from oemof_dashboard import datapackage
-from oemof_dashboard.charts import line_chart
+from oemof_dashboard.charts import CHART_TYPES, PALETTE, Chart, auto_title, chart_figure, webgl_warning
 from oemof_dashboard.cli import discover_datapackages, discover_results
 from oemof_dashboard.result import Result, read, sequence_outcomes
 
+HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
 GRAPH_STYLESHEET = [
     {"selector": "node", "style": {"label": "data(id)", "font-size": 8, "width": 12, "height": 12}},
     {"selector": ".component", "style": {"background-color": "#8a9bb0"}},
@@ -88,6 +91,105 @@ def inspector(package: datapackage.Datapackage, name: str) -> list:
     ]
 
 
+def chart_card(chart: Chart, results: dict[str, Result]) -> html.Div:
+    """Chart card: controls for title, type, width, order and removal; series multi-select; colour overrides; figure.
+
+    Args:
+        chart: Chart config.
+        results: Result Selection as Result name → Result.
+
+    Returns:
+        Card whose controls carry pattern-matching ids keyed by the chart id.
+    """
+    chart_id = chart["id"]
+    picked = [f"{entry}/{variable}" for entry, variable in chart["series"]]
+    # ponytail: sequence kind only until scalar charts arrive; then pick the outcomes by chart["kind"]
+    outcomes = {f"{entry}/{variable}" for result in results.values() for entry, variable in sequence_outcomes(result)}
+    options = [{"label": item.replace("/", " · ", 1), "value": item} for item in sorted(outcomes | set(picked))]
+    figure, notices = chart_figure(chart, results)
+
+    def field(name: str) -> dict:
+        return {"type": "chart-field", "field": name, "chart": chart_id}
+
+    def action(name: str, label: str) -> html.Button:
+        return html.Button(label, id={"type": "chart-action", "action": name, "chart": chart_id}, title=name)
+
+    return html.Div(
+        className=f"chart-card {chart['width']}",
+        children=[
+            html.Div(
+                className="chart-controls",
+                children=[
+                    dcc.Input(
+                        id=field("title"),
+                        value=chart["title"] or "",
+                        placeholder=auto_title(chart["series"]),
+                        debounce=True,
+                        className="chart-title",
+                    ),
+                    dcc.Dropdown(
+                        id=field("type"),
+                        options=CHART_TYPES[chart["kind"]],
+                        value=chart["type"],
+                        clearable=False,
+                        className="chart-select",
+                    ),
+                    dcc.Dropdown(
+                        id=field("width"),
+                        options=["half", "full"],
+                        value=chart["width"],
+                        clearable=False,
+                        className="chart-select",
+                    ),
+                    action("up", "↑"),
+                    action("down", "↓"),
+                    action("remove", "×"),
+                ],
+            ),
+            dcc.Dropdown(id=field("series"), options=options, value=picked, multi=True),
+            html.Div(
+                className="chart-colours",
+                children=[
+                    html.Label(
+                        [
+                            item.replace("/", " · ", 1),
+                            dcc.Input(
+                                id={"type": "chart-colour", "chart": chart_id, "series": item},
+                                value=chart["colours"].get(item, ""),
+                                placeholder=PALETTE[index % len(PALETTE)],
+                                debounce=True,
+                                className="chart-colour",
+                            ),
+                        ]
+                    )
+                    for index, item in enumerate(picked)
+                ],
+            ),
+            *(html.Div(notice, className="notice") for notice in notices),
+            dcc.Graph(figure=figure),
+        ],
+    )
+
+
+def chart_index(charts: list[Chart], chart_id: str) -> int:
+    """Position of a chart in the charts store.
+
+    Args:
+        charts: Charts store content.
+        chart_id: Id of the chart.
+
+    Returns:
+        Index of the chart.
+
+    Raises:
+        PreventUpdate: If the chart is gone, so the calling callback stops.
+    """
+    for index, chart in enumerate(charts):
+        if chart["id"] == chart_id:
+            return index
+    raise PreventUpdate
+
+
 def create_app(datapackages: Path, results: Path) -> Dash:
     """Build the Explorer app.
 
@@ -138,8 +240,9 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                                 style={"width": "100%", "height": "100%"},
                             ),
                         ),
+                        html.Div(id="webgl-warning"),
                         html.Div(id="charts", className="chart-grid"),
-                        # Each chart is its Outcome list as [Result Entry, variable] pairs.
+                        # Chart configs in grid order; the cards in "charts" follow it one to one.
                         dcc.Store(id="charts-store", data=[]),
                     ],
                 ),
@@ -195,30 +298,106 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             for result_name, result in read_selection(selection).items()
         ]
 
+    # Chart callbacks keep "charts-store" and the cards in "charts" in step by patching both at the same index,
+    # so editing one chart re-renders only its card.
     @app.callback(
         Output("charts-store", "data"),
+        Output("charts", "children", allow_duplicate=True),
         Input("add-chart", "n_clicks"),
         State("outcome-picker", "value"),
         State("charts-store", "data"),
+        State("result-selection", "value"),
         prevent_initial_call=True,
     )
-    def add_chart(_clicks: int, picked: list[str] | None, charts: list[list[list[str]]]) -> list[list[list[str]]]:
+    def add_chart(_clicks: int, picked: list[str] | None, _charts: list[Chart], selection: list[str] | None) -> tuple:
         if not picked:
             raise PreventUpdate
-        return [*charts, [value.split("/", 1) for value in picked]]
+        chart: Chart = {
+            "id": uuid.uuid4().hex,
+            "kind": "sequences",
+            "type": "line",
+            "title": None,
+            "series": [value.split("/", 1) for value in picked],
+            "colours": {},
+            "width": "half",
+        }
+        charts, cards = Patch(), Patch()
+        charts.append(chart)
+        cards.append(chart_card(chart, read_selection(selection)))
+        return charts, cards
 
-    @app.callback(Output("charts", "children"), Input("charts-store", "data"), Input("result-selection", "value"))
-    def render_charts(charts: list[list[list[str]]], selection: list[str] | None) -> list[html.Div]:
+    @app.callback(
+        Output("charts-store", "data", allow_duplicate=True),
+        Output("charts", "children", allow_duplicate=True),
+        Input({"type": "chart-field", "field": ALL, "chart": ALL}, "value"),
+        Input({"type": "chart-colour", "chart": ALL, "series": ALL}, "value"),
+        State("charts-store", "data"),
+        State("result-selection", "value"),
+        prevent_initial_call=True,
+    )
+    def edit_chart(_fields: list, _colours: list, charts: list[Chart], selection: list[str] | None) -> tuple:
+        if len(ctx.triggered) != 1:
+            # A rendered card fires with all its inputs at once (at least title, type, width, series); a user
+            # edit changes one.
+            raise PreventUpdate
+        trigger, value = ctx.triggered_id, ctx.triggered[0]["value"]
+        index = chart_index(charts, trigger["chart"])
+        chart = charts[index]
+        if trigger["type"] == "chart-colour":
+            if value and not HEX_COLOUR.fullmatch(value):
+                raise PreventUpdate
+            colours = {item: colour for item, colour in chart["colours"].items() if item != trigger["series"]}
+            chart["colours"] = colours | ({trigger["series"]: value} if value else {})
+        elif trigger["field"] == "series":
+            chart["series"] = [item.split("/", 1) for item in value or []]
+            chart["colours"] = {item: colour for item, colour in chart["colours"].items() if item in (value or [])}
+        elif trigger["field"] == "title":
+            chart["title"] = (value or "").strip() or None
+        else:
+            chart[trigger["field"]] = value  # type or width, offered by the card's dropdowns
+        patched_charts, cards = Patch(), Patch()
+        patched_charts[index] = chart
+        cards[index] = chart_card(chart, read_selection(selection))
+        return patched_charts, cards
+
+    @app.callback(
+        Output("charts-store", "data", allow_duplicate=True),
+        Output("charts", "children", allow_duplicate=True),
+        Input({"type": "chart-action", "action": ALL, "chart": ALL}, "n_clicks"),
+        State("charts-store", "data"),
+        State("result-selection", "value"),
+        prevent_initial_call=True,
+    )
+    def arrange_chart(_clicks: list[int | None], charts: list[Chart], selection: list[str] | None) -> tuple:
+        if len(ctx.triggered) != 1 or not ctx.triggered[0]["value"]:
+            raise PreventUpdate  # new buttons rendered, not clicked
+        index = chart_index(charts, ctx.triggered_id["chart"])
+        patched_charts, cards = Patch(), Patch()
+        if ctx.triggered_id["action"] == "remove":
+            del patched_charts[index]
+            del cards[index]
+            return patched_charts, cards
+        other = index - 1 if ctx.triggered_id["action"] == "up" else index + 1
+        if not 0 <= other < len(charts):
+            raise PreventUpdate
         selected = read_selection(selection)
-        cards = []
-        for series in charts:
-            figure, notices = line_chart([tuple(item) for item in series], selected)
-            cards.append(
-                html.Div(
-                    className="chart-card",
-                    children=[*(html.Div(notice, className="notice") for notice in notices), dcc.Graph(figure=figure)],
-                )
-            )
-        return cards
+        for position, chart in ((index, charts[other]), (other, charts[index])):
+            patched_charts[position] = chart
+            cards[position] = chart_card(chart, selected)
+        return patched_charts, cards
+
+    @app.callback(
+        Output("charts", "children"),
+        Input("result-selection", "value"),
+        State("charts-store", "data"),
+    )
+    def render_charts(selection: list[str] | None, charts: list[Chart]) -> list[html.Div]:
+        selected = read_selection(selection)
+        return [chart_card(chart, selected) for chart in charts]
+
+    @app.callback(Output("webgl-warning", "children"), Input("charts-store", "data"))
+    def warn_webgl(charts: list[Chart]) -> list[html.Div]:
+        warning = webgl_warning(charts)
+        return [html.Div(warning, className="notice")] if warning else []
 
     return app

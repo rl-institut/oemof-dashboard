@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from oemof_dashboard.charts import line_chart
+from oemof_dashboard.charts import CHART_TYPES, Chart, chart_figure, line_chart, webgl_warning
 from oemof_dashboard.result import Result, ResultEntry, read
 
 BHKW_FLOW = ("bhkw-electricity", "flow")
@@ -70,3 +70,71 @@ def test_empty_series_gives_empty_figure(adlershof: Result) -> None:
 
     assert figure.data == ()
     assert notices == []
+
+
+def chart(**overrides: object) -> Chart:
+    """Sequence line chart of BHKW_FLOW with defaults, overridden per test."""
+    return {
+        "id": "c1",
+        "kind": "sequences",
+        "type": "line",
+        "title": None,
+        "series": [list(BHKW_FLOW)],
+        "colours": {},
+        "width": "half",
+    } | overrides
+
+
+@pytest.mark.parametrize(
+    ("series", "title", "expected"),
+    [
+        ([list(BHKW_FLOW)], None, "bhkw-electricity · flow"),
+        (
+            [list(BHKW_FLOW), list(BATTERY_CONTENT)],
+            None,
+            "bhkw-electricity · flow, battery_large-None · storage_content",
+        ),
+        ([list(BHKW_FLOW)] * 4, None, "bhkw-electricity · flow, bhkw-electricity · flow, bhkw-electricity · flow +1"),
+        ([], None, "Empty chart"),
+        ([list(BHKW_FLOW)], "CHP output", "CHP output"),
+    ],
+)
+def test_title_defaults_to_series_unless_set(adlershof: Result, series: list, title: str | None, expected: str) -> None:
+    figure, _ = chart_figure(chart(series=series, title=title), {"adlershof": adlershof})
+
+    assert figure.layout.title.text == expected
+
+
+def test_emptied_chart_is_empty_figure(adlershof: Result) -> None:
+    figure, _ = chart_figure(chart(series=[]), {"adlershof": adlershof})
+
+    assert figure.data == ()
+
+
+def test_type_must_belong_to_kind(adlershof: Result) -> None:
+    assert "bar" not in CHART_TYPES["sequences"]
+    with pytest.raises(ValueError, match="bar"):
+        chart_figure(chart(type="bar"), {"adlershof": adlershof})
+
+
+def test_colour_override_replaces_palette_for_that_outcome_only(adlershof: Result) -> None:
+    series = [list(BHKW_FLOW), list(BATTERY_CONTENT)]
+
+    figure, _ = chart_figure(
+        chart(series=series, colours={"battery_large-None/storage_content": "#123456"}),
+        {"base": adlershof, "variant": adlershof},
+    )
+
+    assert [(trace.line.color, trace.line.dash) for trace in figure.data] == [
+        ("#2a78d6", "solid"),
+        ("#2a78d6", "dash"),
+        ("#123456", "solid"),
+        ("#123456", "dash"),
+    ]
+
+
+@pytest.mark.parametrize(("chart_count", "warned"), [(8, False), (9, True)])
+def test_more_than_eight_webgl_charts_warns(chart_count: int, warned: bool) -> None:
+    warning = webgl_warning([chart(id=str(index)) for index in range(chart_count)])
+
+    assert (warning is not None) is warned
