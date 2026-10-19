@@ -361,6 +361,9 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                             id="outcome-picker", options=[], multi=True, placeholder="Outcome / Input Sequence…"
                         ),
                         html.Button("Add chart", id="add-chart"),
+                        html.Hr(),
+                        html.Label("Sankey", htmlFor="sankey-bus"),
+                        dcc.Dropdown(id="sankey-bus", options=[], placeholder="(whole system)", disabled=True),
                         html.Button("Add Sankey", id="add-sankey", disabled=True),
                     ],
                 ),
@@ -554,20 +557,30 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         cards.extend(chart_cards(new, selection, name))
         return charts, cards
 
-    @app.callback(Output("add-sankey", "disabled"), Input("datapackage", "value"))
-    def offer_sankey(name: str | None) -> bool:
-        return not name
+    @app.callback(
+        Output("sankey-bus", "options"),
+        Output("sankey-bus", "value"),
+        Output("sankey-bus", "disabled"),
+        Output("add-sankey", "disabled"),
+        Input("datapackage", "value"),
+    )
+    def offer_sankey(name: str | None) -> tuple[list[str], None, bool, bool]:
+        buses = list(datapackage.read(datapackages / name).buses) if name else []
+        return buses, None, not name, not name
 
     @app.callback(
         Output("charts-store", "data", allow_duplicate=True),
         Output("charts", "children", allow_duplicate=True),
         Input("add-sankey", "n_clicks"),
+        State("sankey-bus", "value"),
         State("charts-store", "data"),
         State("result-selection", "value"),
         State("datapackage", "value"),
         prevent_initial_call=True,
     )
-    def add_sankey(_clicks: int | None, _charts: list[Chart], selection: list[str] | None, name: str | None) -> tuple:
+    def add_sankey(
+        _clicks: int | None, bus: str | None, _charts: list[Chart], selection: list[str] | None, name: str | None
+    ) -> tuple:
         new: Chart = {
             "id": uuid.uuid4().hex,
             "kind": "system",
@@ -576,7 +589,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             "series": [],
             "colours": {},
             "width": "half",
-            "bus": None,
+            "bus": bus,
         }
         charts, cards = Patch(), Patch()
         charts.append(new)

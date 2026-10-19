@@ -22,6 +22,7 @@ EXPLORER_IDS = [
     "result-selection",
     "outcome-picker",
     "add-chart",
+    "sankey-bus",
     "add-sankey",
     "graph",
     "charts",
@@ -231,9 +232,9 @@ class Page:
             )
         )
 
-    def add_sankey(self) -> None:
-        """Click "Add Sankey"."""
-        self.apply(fire(self.app, {"add-sankey.n_clicks": 1}, self.states()))
+    def add_sankey(self, bus: str | None = None) -> None:
+        """Pick a Bus filter, or none for the whole system, and click "Add Sankey"."""
+        self.apply(fire(self.app, {"add-sankey.n_clicks": 1}, {"sankey-bus.value": bus, **self.states()}))
 
     def edit(self, field: str, chart: int, value: object) -> None:
         """Set a card's title, type, width, series or Bus control."""
@@ -676,7 +677,25 @@ def test_inspector_add_chart_button_adds_bar_chart_for_scalar(page: Page) -> Non
 
 @pytest.mark.parametrize(("name", "disabled"), [(None, True), ("adlershof", False)])
 def test_add_sankey_needs_a_selected_datapackage(adlershof_app: Dash, name: str | None, disabled: bool) -> None:
-    assert fire(adlershof_app, {"datapackage.value": name})["add-sankey"]["disabled"] is disabled
+    outputs = fire(adlershof_app, {"datapackage.value": name})
+
+    assert outputs["add-sankey"]["disabled"] is disabled
+    assert outputs["sankey-bus"]["disabled"] is disabled
+
+
+@pytest.mark.parametrize(("name", "buses"), [(None, []), ("adlershof", ["electricity", "heat_central"])])
+def test_sankey_bus_picker_offers_buses_of_the_datapackage(adlershof_app: Dash, name: str | None, buses: list) -> None:
+    sankey_bus = fire(adlershof_app, {"datapackage.value": name})["sankey-bus"]
+
+    assert sankey_bus["options"][:2] == buses
+    assert sankey_bus["value"] is None  # a Bus of the previous Datapackage is dropped
+
+
+def test_sankey_is_added_with_the_picked_bus(page: Page) -> None:
+    page.add_sankey("gas")
+
+    assert page.charts[0]["bus"] == "gas"
+    assert "Sankey · gas" in json.dumps(page.cards, ensure_ascii=False)
 
 
 def test_added_sankey_is_a_system_chart_offering_a_bus_filter_instead_of_series(page: Page) -> None:
