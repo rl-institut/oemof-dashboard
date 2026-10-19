@@ -1,3 +1,4 @@
+import json
 import socket
 import threading
 import time
@@ -9,7 +10,16 @@ from dash import Dash
 
 from oemof_dashboard.app import create_app
 
-EXPLORER_IDS = ["datapackage", "result-selection", "outcome-picker", "add-chart", "graph", "charts", "inspector"]
+EXPLORER_IDS = [
+    "datapackage",
+    "result-selection",
+    "outcome-picker",
+    "add-chart",
+    "graph",
+    "charts",
+    "charts-store",
+    "inspector",
+]
 
 
 @pytest.fixture
@@ -82,3 +92,67 @@ def test_layout_rescans_folders_on_every_load(tmp_path: Path) -> None:
     (tmp_path / "results" / "late_result" / "bhkw-electricity-sequences.csv").write_text("")
 
     assert components_by_id(app)["result-selection"]["options"] == ["late_result"]
+
+
+def fire(
+    app: Dash,
+    output: str,
+    inputs: dict[str, object],
+    states: dict[str, object] | None = None,
+    changed: list[str] | None = None,
+) -> dict:
+    """POST to the callback behind `output` (`id.prop`) as the browser would; return the new output props.
+
+    A key without "." passes its value through raw, e.g. the entry list of a pattern-matching input.
+    `changed` names the triggering inputs; default all.
+    """
+
+    def props(values: dict[str, object]) -> list[dict]:
+        return [
+            {"id": key.split(".")[0], "property": key.split(".")[1], "value": value} if "." in key else value
+            for key, value in values.items()
+        ]
+
+    output_id, output_prop = output.split(".")
+    payload = {
+        "output": output,
+        "outputs": {"id": output_id, "property": output_prop},
+        "inputs": props(inputs),
+        "state": props(states or {}),
+        "changedPropIds": changed or list(inputs),
+    }
+    response = app.server.test_client().post("/_dash-update-component", json=payload)
+    assert response.status_code == 200, response.get_data(as_text=True)
+    return response.get_json()["response"][output_id]
+
+
+def test_inspector_summary_lists_result_entries_without_datapackage(adlershof_app: Dash) -> None:
+    inspector = fire(
+        adlershof_app,
+        "inspector.children",
+        {"graph.tapNode": None, "node-links": [], "datapackage.value": None, "result-selection.value": ["adlershof"]},
+        changed=["result-selection.value"],
+    )
+
+    (summary,) = inspector["children"]
+    heading, entries = summary["props"]["children"]
+    assert heading["props"]["children"] == "adlershof: 85 Result Entries"
+    assert {"props": {"children": "bhkw-electricity"}, "type": "Li", "namespace": "dash_html_components"} in entries[
+        "props"
+    ]["children"]
+
+
+def test_added_chart_renders_for_result_selection(adlershof_app: Dash) -> None:
+    charts = fire(
+        adlershof_app,
+        "charts-store.data",
+        {"add-chart.n_clicks": 1},
+        {"outcome-picker.value": ["bhkw-electricity/flow"], "charts-store.data": []},
+    )["data"]
+    assert charts == [[["bhkw-electricity", "flow"]]]
+
+    cards = fire(
+        adlershof_app, "charts.children", {"charts-store.data": charts, "result-selection.value": ["adlershof"]}
+    )
+
+    assert "bhkw-electricity · flow · adlershof" in json.dumps(cards, ensure_ascii=False)

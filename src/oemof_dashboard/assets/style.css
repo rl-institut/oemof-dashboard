@@ -9,6 +9,8 @@ button { margin-top: 8px; }
 
 .graph-pane { resize: vertical; overflow: hidden; height: 45vh; min-height: 150px; border: 1px solid #ddd; background: #fff; }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.chart-card { background: #fff; border: 1px solid #ddd; padding: 4px; }
+.notice { background: #fff4d6; padding: 4px 8px; }
 
 .node-link { margin: 2px 4px 2px 0; padding: 1px 6px; border: none; border-radius: 3px; background: #fbe6d2; color: #8a4510; cursor: pointer; }
 .warning { margin-bottom: 6px; padding: 4px 6px; background: #fff4d6; border-left: 3px solid #e0a800; }

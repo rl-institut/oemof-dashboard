@@ -3,11 +3,13 @@
 from pathlib import Path
 
 import dash_cytoscape as cyto
-from dash import ALL, Dash, Input, Output, ctx, dcc, html
+from dash import ALL, Dash, Input, Output, State, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
 from oemof_dashboard import datapackage
+from oemof_dashboard.charts import line_chart
 from oemof_dashboard.cli import discover_datapackages, discover_results
+from oemof_dashboard.result import Result, read, sequence_outcomes
 
 GRAPH_STYLESHEET = [
     {"selector": "node", "style": {"label": "data(id)", "font-size": 8, "width": 12, "height": 12}},
@@ -137,6 +139,8 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                             ),
                         ),
                         html.Div(id="charts", className="chart-grid"),
+                        # Each chart is its Outcome list as [Result Entry, variable] pairs.
+                        dcc.Store(id="charts-store", data=[]),
                     ],
                 ),
                 html.Div(id="inspector", className="pane"),
@@ -145,27 +149,76 @@ def create_app(datapackages: Path, results: Path) -> Dash:
 
     app.layout = layout
 
+    def read_selection(selection: list[str] | None) -> dict[str, Result]:
+        # Parsed lazily on selection; `read` re-uses the parse until a Result file changes.
+        return {name: read(results / name) for name in selection or []}
+
     @app.callback(Output("graph", "elements"), Input("datapackage", "value"))
     def draw_graph(name: str | None) -> list[dict]:
         return graph_elements(datapackage.read(datapackages / name)) if name else []
+
+    @app.callback(Output("outcome-picker", "options"), Input("result-selection", "value"))
+    def list_outcomes(selection: list[str] | None) -> list[dict[str, str]]:
+        # ponytail: Result Sequences only while the line chart is the only chart; scalars arrive with the bar chart
+        outcomes = set().union(*map(sequence_outcomes, read_selection(selection).values()))
+        # Result Entry names come from file names, so they never contain "/".
+        return [
+            {"label": f"{entry} · {variable}", "value": f"{entry}/{variable}"} for entry, variable in sorted(outcomes)
+        ]
 
     @app.callback(
         Output("inspector", "children"),
         Input("graph", "tapNode"),  # not tapNodeData: that doesn't change when the same node is tapped again
         Input({"type": "node-link", "node": ALL}, "n_clicks"),
         Input("datapackage", "value"),
+        Input("result-selection", "value"),
     )
-    def inspect(tapped: dict | None, _clicks: list[int | None], name: str | None) -> list:
-        if not name:
-            return []
+    def inspect(tapped: dict | None, _clicks: list[int | None], name: str | None, selection: list[str] | None) -> list:
         link_clicked = isinstance(ctx.triggered_id, dict)
         if link_clicked and not ctx.triggered[0]["value"]:
             raise PreventUpdate  # new links rendered, not clicked
-        package = datapackage.read(datapackages / name)
-        if link_clicked:
+        package = datapackage.read(datapackages / name) if name else None
+        if package and link_clicked:
             return inspector(package, ctx.triggered_id["node"])
-        if ctx.triggered_id == "graph":
+        if package and ctx.triggered_id == "graph":
             return inspector(package, tapped["data"]["id"])
-        return [html.Div(warning, className="warning") for warning in package.warnings]
+        # Nothing selected: summarise the inputs.
+        warnings = [html.Div(warning, className="warning") for warning in package.warnings] if package else []
+        return warnings + [
+            html.Details(
+                open=True,
+                children=[
+                    html.Summary(f"{result_name}: {len(result.entries)} Result Entries"),
+                    html.Ul([html.Li(entry) for entry in result.entries]),
+                ],
+            )
+            for result_name, result in read_selection(selection).items()
+        ]
+
+    @app.callback(
+        Output("charts-store", "data"),
+        Input("add-chart", "n_clicks"),
+        State("outcome-picker", "value"),
+        State("charts-store", "data"),
+        prevent_initial_call=True,
+    )
+    def add_chart(_clicks: int, picked: list[str] | None, charts: list[list[list[str]]]) -> list[list[list[str]]]:
+        if not picked:
+            raise PreventUpdate
+        return [*charts, [value.split("/", 1) for value in picked]]
+
+    @app.callback(Output("charts", "children"), Input("charts-store", "data"), Input("result-selection", "value"))
+    def render_charts(charts: list[list[list[str]]], selection: list[str] | None) -> list[html.Div]:
+        selected = read_selection(selection)
+        cards = []
+        for series in charts:
+            figure, notices = line_chart([tuple(item) for item in series], selected)
+            cards.append(
+                html.Div(
+                    className="chart-card",
+                    children=[*(html.Div(notice, className="notice") for notice in notices), dcc.Graph(figure=figure)],
+                )
+            )
+        return cards
 
     return app
