@@ -1,3 +1,4 @@
+import base64
 import json
 import math
 import socket
@@ -29,6 +30,10 @@ EXPLORER_IDS = [
     "charts",
     "charts-store",
     "webgl-warning",
+    "save-dashboard",
+    "dashboard-download",
+    "dashboard-upload",
+    "dashboard-notice",
     "inspector",
 ]
 
@@ -866,3 +871,104 @@ def test_add_bus_balance_in_left_pane_adds_a_bus_balance_of_the_picked_bus(page:
 @pytest.mark.parametrize(("bus", "disabled"), [(None, True), ("gas", False)])
 def test_add_bus_balance_in_left_pane_needs_a_picked_bus(adlershof_app: Dash, bus: str | None, disabled: bool) -> None:
     assert fire(adlershof_app, {"sankey-bus.value": bus})["add-bus-balance"]["disabled"] is disabled
+
+
+def upload(text: str) -> str:
+    """`dcc.Upload` contents of a file with this text."""
+    return "data:application/json;base64," + base64.b64encode(text.encode()).decode()
+
+
+def save(page: Page) -> str:
+    """Click "Save Dashboard" and return the downloaded file's text."""
+    download = fire(page.app, {"save-dashboard.n_clicks": 1}, page.states())["dashboard-download"]["data"]
+    assert download["filename"] == "dashboard.json"
+    return download["content"]
+
+
+def inputs_of(page: Page) -> dict[str, object]:
+    """Result Selection and Datapackage of the page, as states."""
+    return {key: value for key, value in page.states().items() if key != "charts-store.data"}
+
+
+def load(page: Page, text: str) -> dict:
+    """Upload a Dashboard file with this text; apply the response to the page and return it."""
+    response = fire(page.app, {"dashboard-upload.contents": upload(text)}, inputs_of(page))
+    page.apply(response)
+    return response
+
+
+def test_saved_dashboard_holds_charts_result_selection_and_datapackage(page: Page) -> None:
+    page.add("bhkw-electricity/flow")
+
+    stored = json.loads(save(page))
+
+    assert (stored["version"], stored["result_selection"], stored["datapackage"]) == (1, ["adlershof"], "adlershof")
+    assert [chart["series"] for chart in stored["charts"]] == [[["bhkw-electricity", "flow"]]]
+
+
+def test_loading_replaces_the_charts(page: Page) -> None:
+    page.add("bhkw-electricity/flow")
+    page.add_system("add-bus-balance", "gas")
+    saved = save(page)
+    page.click("remove", 0)
+    page.add_sankey()
+
+    load(page, saved)
+
+    assert [(chart["type"], chart.get("bus")) for chart in page.charts] == [("line", None), ("bus_balance", "gas")]
+    assert len(page.cards) == 2
+    assert "Bus balance · gas" in json.dumps(page.cards, ensure_ascii=False)
+
+
+def test_loading_applies_stored_inputs_and_notices_missing_ones(page: Page) -> None:
+    text = json.dumps(
+        {
+            "version": 1,
+            "result_selection": ["adlershof", "gone"],
+            "datapackage": "elsewhere",
+            "charts": [
+                {
+                    "kind": "sequences",
+                    "type": "line",
+                    "title": None,
+                    "series": [["nope", "flow"]],
+                    "colours": {},
+                    "width": "half",
+                }
+            ],
+        }
+    )
+
+    response = load(page, text)
+
+    assert response["result-selection"]["value"] == ["adlershof"]
+    assert "datapackage" not in response  # stored one missing: the current one stays
+    notice = json.dumps(response["dashboard-notice"]["children"])
+    assert "Result gone" in notice and "Datapackage elsewhere" in notice
+    assert "nope · flow · adlershof (missing)" in json.dumps(page.cards, ensure_ascii=False)
+
+
+def test_loading_without_stored_inputs_keeps_the_current_ones(page: Page) -> None:
+    response = load(page, '{"version": 1, "charts": []}')
+
+    assert "result-selection" not in response and "datapackage" not in response
+    assert page.charts == [] and response["dashboard-notice"]["children"] == []
+
+
+@pytest.mark.parametrize("text", ["{not json", '{"version": 2, "charts": []}', '{"version": 1}'])
+def test_bad_dashboard_file_is_refused_with_banner_and_charts_untouched(page: Page, text: str) -> None:
+    page.add("bhkw-electricity/flow")
+
+    response = fire(page.app, {"dashboard-upload.contents": upload(text)}, inputs_of(page))
+
+    assert response.keys() == {"dashboard-notice", "dashboard-upload"}
+    (banner,) = response["dashboard-notice"]["children"]
+    assert banner["props"]["className"] == "warning"
+    assert banner["props"]["children"].startswith("Dashboard file refused: ")
+
+
+def test_upload_is_cleared_so_the_same_file_can_be_loaded_again(page: Page) -> None:
+    response = load(page, '{"version": 1, "charts": []}')
+
+    assert response["dashboard-upload"]["contents"] is None
+    assert fire(page.app, {"dashboard-upload.contents": None}, inputs_of(page)) == {}

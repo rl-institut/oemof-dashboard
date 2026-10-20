@@ -475,7 +475,7 @@ def test_sankey_bus_filter_not_in_datapackage_is_noticed() -> None:
     figure, notices = sankey({"base": flows(**{"pv-el": [1.0]})}, TWO_BUSES, bus="gas")
 
     assert sankey_links(figure.data[0]) == {}
-    assert notices == ["Bus gas isn't in the Datapackage."]
+    assert notices == ["Bus gas (missing): not in the Datapackage."]
 
 
 def stacks(figure: go.Figure) -> list[tuple[str, list[float]]]:

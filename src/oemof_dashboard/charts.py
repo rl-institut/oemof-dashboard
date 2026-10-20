@@ -1,5 +1,6 @@
 """Pure figure builders: Outcomes × Result Selection → plotly figure plus notices. No Dash imports."""
 
+import re
 from collections.abc import Iterator
 from typing import Literal, NotRequired, TypedDict
 
@@ -15,6 +16,7 @@ from oemof_dashboard.result import Result, ResultEntry
 # Validated categorical palette (light mode), fixed order; colour encodes Entry×variable / Input Sequence, never
 # the Result.
 PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")  # form of a colour override
 # The Result is encoded by dash style; the first four stay distinguishable.
 DASHES = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
 MAX_DISTINCT_RESULTS = 4
@@ -380,7 +382,7 @@ def sankey(results: dict[str, Result], package: Datapackage, bus: str | None = N
     for component, connected in package.connections:
         component_buses.setdefault(component, connected)
     width = 1 / max(len(results), 1)
-    notices = [f"Bus {bus} isn't in the Datapackage."] if bus is not None and bus not in package.buses else []
+    notices = [f"Bus {bus} (missing): not in the Datapackage."] if bus is not None and bus not in package.buses else []
     for result_index, (result_name, result) in enumerate(results.items()):
         found, without = _flows(result, match(result, package), bus)
         # pandas skips NaN, e.g. the trailing row

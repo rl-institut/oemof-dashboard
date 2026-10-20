@@ -1,18 +1,19 @@
 """Dash layout and callbacks of the Explorer."""
 
-import re
+import base64
 import uuid
 from collections import Counter
 from pathlib import Path
 
 import dash_cytoscape as cyto
 import pandas as pd
-from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html
+from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
 from oemof_dashboard import datapackage
 from oemof_dashboard.charts import (
     CHART_TYPES,
+    HEX_COLOUR,
     PALETTE,
     Chart,
     auto_title,
@@ -24,10 +25,10 @@ from oemof_dashboard.charts import (
     webgl_warning,
 )
 from oemof_dashboard.cli import discover_datapackages, discover_results
+from oemof_dashboard.dashboard import from_json, to_json
 from oemof_dashboard.matching import Matching, match
 from oemof_dashboard.result import Result, read, scalar_outcomes, sequence_outcomes
 
-HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")
 MIN_MATCH_RATIO = 0.5  # below it, the selected Datapackage likely belongs to another Result
 GRAPH_STYLESHEET = [
     {"selector": "node", "style": {"label": "data(id)", "font-size": 8, "width": 12, "height": 12}},
@@ -422,6 +423,10 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                         dcc.Dropdown(id="sankey-bus", options=[], placeholder="(whole system)", disabled=True),
                         html.Button("Add Sankey", id="add-sankey", disabled=True),
                         html.Button("Add Bus balance", id="add-bus-balance", disabled=True),
+                        html.Hr(),
+                        html.Button("Save Dashboard", id="save-dashboard"),
+                        dcc.Download(id="dashboard-download"),
+                        dcc.Upload(html.Button("Load Dashboard"), id="dashboard-upload", accept=".json"),
                     ],
                 ),
                 html.Div(
@@ -437,6 +442,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                                 style={"width": "100%", "height": "100%"},
                             ),
                         ),
+                        html.Div(id="dashboard-notice"),
                         html.Div(id="webgl-warning"),
                         html.Div(id="charts", className="chart-grid"),
                         # Chart configs in grid order; the cards in "charts" follow it one to one.
@@ -775,6 +781,61 @@ def create_app(datapackages: Path, results: Path) -> Dash:
     )
     def render_charts(selection: list[str] | None, name: str | None, charts: list[Chart]) -> list[html.Div]:
         return chart_cards(charts, selection, name)
+
+    @app.callback(
+        Output("dashboard-download", "data"),
+        Input("save-dashboard", "n_clicks"),
+        State("charts-store", "data"),
+        State("result-selection", "value"),
+        State("datapackage", "value"),
+        prevent_initial_call=True,
+    )
+    def save_dashboard(
+        _clicks: int | None, charts: list[Chart], selection: list[str] | None, name: str | None
+    ) -> dict[str, str]:
+        return {"content": to_json(charts, selection, name), "filename": "dashboard.json"}
+
+    @app.callback(
+        Output("charts-store", "data", allow_duplicate=True),
+        Output("charts", "children", allow_duplicate=True),
+        Output("result-selection", "value"),
+        Output("datapackage", "value"),
+        Output("dashboard-notice", "children"),
+        # Cleared, so uploading the same file again fires once more.
+        Output("dashboard-upload", "contents"),
+        Input("dashboard-upload", "contents"),
+        State("result-selection", "value"),
+        State("datapackage", "value"),
+        prevent_initial_call=True,
+    )
+    def load_dashboard(contents: str | None, selection: list[str] | None, name: str | None) -> tuple:
+        if not contents:
+            raise PreventUpdate
+        try:
+            # `contents` is a data URL: "data:<type>;base64,<data>"
+            loaded = from_json(base64.b64decode(contents.partition(",")[2]).decode())
+        except ValueError as error:  # also undecodable bytes
+            banner = html.Div(f"Dashboard file refused: {error}", className="warning")
+            return no_update, no_update, no_update, no_update, [banner], None
+        # Stored inputs are non-binding defaults: those present are applied, the current ones stay otherwise.
+        missing, selection_out, name_out = [], no_update, no_update
+        if loaded.result_selection is not None:
+            available = set(discover_results(results))
+            usable = list(read_selection([result for result in loaded.result_selection if result in available]))
+            missing += [f"Result {result}" for result in loaded.result_selection if result not in usable]
+            if usable:
+                selection = selection_out = usable
+        if loaded.datapackage is not None:
+            if loaded.datapackage in discover_datapackages(datapackages) and read_package(loaded.datapackage):
+                name = name_out = loaded.datapackage
+            else:
+                missing.append(f"Datapackage {loaded.datapackage}")
+        notices = [
+            html.Div(f"{label} (missing): stored in the Dashboard, but not available or refused.", className="notice")
+            for label in missing
+        ]
+        charts = loaded.chart_configs()
+        return charts, chart_cards(charts, selection, name), selection_out, name_out, notices, None
 
     @app.callback(Output("webgl-warning", "children"), Input("charts-store", "data"))
     def warn_webgl(charts: list[Chart]) -> list[html.Div]:
