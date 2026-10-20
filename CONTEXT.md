@@ -14,9 +14,13 @@ _Avoid_: run, output, solution
 
 ## Energy system
 
+**Node**:
+Any Bus or Component, i.e. one named element row of the Datapackage and one vertex of the network graph. A Result Entry of the form `<node>-None` holds Outcomes of the node itself rather than of a Flow.
+_Avoid_: vertex, element
+
 **Component**:
 A node of the energy system other than a Bus (e.g. heat pump, storage, demand), with Parameters.
-_Avoid_: element, node, asset
+_Avoid_: element, asset; "node" when only Components are meant
 
 **Bus**:
 A node connecting Components; it carries one energy carrier.
