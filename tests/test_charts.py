@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import pytest
-from conftest import package_of
+from conftest import package_of, result_of
 
 from oemof_dashboard import datapackage
 from oemof_dashboard.charts import (
@@ -13,6 +13,7 @@ from oemof_dashboard.charts import (
     auto_title,
     bus_balance,
     chart_figure,
+    chart_nodes,
     line_chart,
     sankey,
     webgl_warning,
@@ -571,3 +572,48 @@ def test_bus_balance_chart_without_datapackage_is_empty_with_notice() -> None:
 
     assert figure.data == ()
     assert notices == ["Bus balance needs a selected Datapackage."]
+
+
+@pytest.mark.parametrize(
+    ("series", "nodes"),
+    [
+        ([list(BHKW_FLOW)], ["bhkw", "electricity"]),
+        (
+            [list(BATTERY_CONTENT), list(BHKW_FLOW), ["gas-bhkw", "flow"]],
+            ["battery_large", "bhkw", "electricity", "gas"],
+        ),
+        ([["no-such-entry", "flow"], list(HEAT_DEMAND)], []),
+    ],
+)
+def test_chart_nodes_are_the_nodes_of_its_matched_result_entries_in_series_order(
+    adlershof: Result, adlershof_package: datapackage.Datapackage, series: list, nodes: list[str]
+) -> None:
+    assert chart_nodes(chart(series=series), {"adlershof": adlershof}, adlershof_package) == nodes
+
+
+@pytest.mark.parametrize(
+    ("overrides", "nodes"),
+    [
+        ({"type": "bus_balance", "bus": "electricity"}, ["electricity"]),
+        ({"bus": "heat_central"}, ["heat_central"]),
+        ({"bus": None}, []),
+        ({"bus": "no_such_bus"}, []),
+    ],
+)
+def test_system_chart_nodes_are_its_bus(
+    adlershof: Result, adlershof_package: datapackage.Datapackage, overrides: dict, nodes: list[str]
+) -> None:
+    assert chart_nodes(system(**overrides), {"adlershof": adlershof}, adlershof_package) == nodes
+
+
+def test_chart_nodes_without_datapackage_are_none(adlershof: Result) -> None:
+    assert chart_nodes(chart(), {"adlershof": adlershof}, None) == []
+    assert chart_nodes(system(bus="electricity"), {"adlershof": adlershof}, None) == []
+
+
+def test_flow_not_in_datapackage_still_gives_chips_as_the_graph_draws_it() -> None:
+    nodes = chart_nodes(
+        chart(series=[["pv-heat", "flow"], ["foo-bar", "flow"]]), {"base": result_of("pv-heat")}, TWO_BUSES
+    )
+
+    assert nodes == ["pv", "heat"]

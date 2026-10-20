@@ -156,6 +156,28 @@ def chart_figure(
     return figure, notices
 
 
+def chart_nodes(chart: Chart, results: dict[str, Result], package: Datapackage | None) -> list[str]:
+    """Nodes a chart's series belong to, shown as its chips.
+
+    Args:
+        chart: Chart config.
+        results: Result Selection as Result name → Result; a Result Entry counts if matched in any of them.
+        package: Selected Datapackage; None if none is selected.
+
+    Returns:
+        Nodes of the chart's Outcomes' matched Result Entries, in series order and source before target, or the Bus
+        of a system chart; unmatched Result Entries, Input Sequences and a Bus not in the Datapackage give none.
+        Empty without a Datapackage.
+    """
+    if package is None:
+        return []
+    if chart["kind"] == "system":
+        return [chart["bus"]] if chart.get("bus") in package.buses else []
+    matched = {entry: pair for result in results.values() for entry, pair in match(result, package).matched.items()}
+    pairs = [matched.get(item[0], ()) for item in chart["series"] if len(item) == 2]
+    return list(dict.fromkeys(name for pair in pairs for name in pair if name is not None))
+
+
 def _colour(index: int, item: tuple[str, ...], colours: dict[str, str] | None) -> str:
     # ponytail: palette wraps after 8 series; a colour override is the way out
     return (colours or {}).get(series_key(item), PALETTE[index % len(PALETTE)])

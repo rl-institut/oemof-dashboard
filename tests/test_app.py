@@ -177,7 +177,7 @@ def patched(value: list, update: object) -> list:
 def test_inspector_summary_lists_result_entries_without_datapackage(adlershof_app: Dash) -> None:
     inspector = fire(
         adlershof_app,
-        {"graph.tapNode": None, "node-link": [], "datapackage.value": None, "result-selection.value": ["adlershof"]},
+        inspect_inputs(None) | {"result-selection.value": ["adlershof"]},
         {"graph.selectedNodeData": None},
         changed=["result-selection.value"],
     )["inspector"]
@@ -508,6 +508,7 @@ def inspect_inputs(datapackage_name: str | None, tapped: str | None = None) -> d
     return {
         "graph.tapNode": {"data": {"id": tapped}} if tapped else None,
         "node-link": [],
+        "chart-chip": [],
         "datapackage.value": datapackage_name,
     }
 
@@ -578,6 +579,29 @@ def test_rendering_add_chart_buttons_adds_no_chart(page: Page) -> None:
     response = fire(page.app, inputs, {"outcome-picker.value": None, **page.states()}, [f"{pattern(button)}.n_clicks"])
 
     assert response == {}
+
+
+@pytest.mark.parametrize(("clicks", "shown"), [(1, True), (None, False)])
+def test_clicking_a_chart_chip_inspects_its_node(adlershof_app: Dash, clicks: int | None, shown: bool) -> None:
+    chip = {"type": "chart-chip", "chart": "c1", "node": "bhkw"}
+    inputs = inspect_inputs("adlershof") | {
+        "chart-chip": [{"id": chip, "property": "n_clicks", "value": clicks}],
+        "result-selection.value": ["adlershof"],
+    }
+
+    response = fire(adlershof_app, inputs, NO_SELECTED_NODE, changed=[f"{pattern(chip)}.n_clicks"])
+
+    assert ("bhkw-electricity · flow" in rendered(response)) is shown
+
+
+def test_chart_card_shows_chips_of_its_nodes(page: Page) -> None:
+    page.add("bhkw-electricity/flow")
+
+    chart_id = page.charts[0]["id"]
+    text = rendered(page.cards)
+
+    for node in ("bhkw", "electricity"):
+        assert rendered({"type": "chart-chip", "chart": chart_id, "node": node}) in text
 
 
 def test_inspector_keeps_selected_node_when_result_selection_changes(adlershof_app: Dash) -> None:

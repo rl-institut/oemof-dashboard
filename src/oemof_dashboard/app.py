@@ -17,6 +17,7 @@ from oemof_dashboard.charts import (
     Chart,
     auto_title,
     chart_figure,
+    chart_nodes,
     series_item,
     series_key,
     series_label,
@@ -271,6 +272,12 @@ def chart_card(
                     action("remove", "×"),
                 ],
             ),
+            html.Div(
+                [
+                    html.Button(node, id={"type": "chart-chip", "chart": chart_id, "node": node}, className="node-link")
+                    for node in chart_nodes(chart, results, package)
+                ]
+            ),
             *(
                 [
                     dcc.Dropdown(
@@ -453,6 +460,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         Output("inspector", "children"),
         Input("graph", "tapNode"),  # not tapNodeData: that doesn't change when the same node is tapped again
         Input({"type": "node-link", "node": ALL}, "n_clicks"),
+        Input({"type": "chart-chip", "chart": ALL, "node": ALL}, "n_clicks"),
         Input("datapackage", "value"),
         Input("result-selection", "value"),
         State("graph", "selectedNodeData"),
@@ -460,13 +468,14 @@ def create_app(datapackages: Path, results: Path) -> Dash:
     def inspect(
         tapped: dict | None,
         _clicks: list[int | None],
+        _chip_clicks: list[int | None],
         name: str | None,
         selection: list[str] | None,
         selected_nodes: list[dict] | None,
     ) -> list:
         link_clicked = isinstance(ctx.triggered_id, dict)
         if link_clicked and not ctx.triggered[0]["value"]:
-            raise PreventUpdate  # new links rendered, not clicked
+            raise PreventUpdate  # new links or chips rendered, not clicked
         package = datapackage.read(datapackages / name) if name else None
         selected = read_selection(selection)
         if package and link_clicked:
@@ -506,6 +515,21 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                 )
             )
         return summary
+
+    # A clicked node link or chart chip also selects its node in the graph, which updates "selectedNodeData".
+    # Selecting via `elements` instead would miss a node re-selected after a tap: elements only patch on change.
+    app.clientside_callback(
+        """(_links, _chips) => {
+            const context = window.dash_clientside.callback_context;
+            const cy = document.getElementById("graph")?._cyreg?.cy;
+            if (!cy || !context.triggered[0]?.value) return;  // new links or chips rendered, not clicked
+            cy.$(":selected").unselect();
+            cy.getElementById(context.triggered_id.node).select();
+        }""",
+        Input({"type": "node-link", "node": ALL}, "n_clicks"),
+        Input({"type": "chart-chip", "chart": ALL, "node": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
 
     # Chart callbacks keep "charts-store" and the cards in "charts" in step by patching both at the same index,
     # so editing one chart re-renders only its card.

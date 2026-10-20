@@ -3,7 +3,7 @@ name = "oemof-dashboard"
 version = "0.1.0"
 description = "Local Dash app to explore oemof-tabular Datapackages and their Results"
 requires-python = ">=3.12"
-dependencies = ["dash", "dash-cytoscape", "pandas", "plotly"]
+dependencies = ["dash>=2.17", "dash-cytoscape", "pandas", "plotly"]
 
 [project.scripts]
 oemof-dashboard = "oemof_dashboard.cli:main"
