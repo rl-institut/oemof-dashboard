@@ -83,16 +83,68 @@ def test_layout_has_explorer_panes(adlershof_app: Dash) -> None:
     assert set(EXPLORER_IDS) <= components_by_id(adlershof_app).keys()
 
 
-def test_selectors_list_discovered_inputs(tmp_path: Path) -> None:
-    (tmp_path / "datapackages" / "dp_only").mkdir(parents=True)
-    (tmp_path / "datapackages" / "dp_only" / "datapackage.json").write_text("")
-    (tmp_path / "results" / "result_only").mkdir(parents=True)
-    (tmp_path / "results" / "result_only" / "bhkw-electricity-sequences.csv").write_text("")
+@pytest.fixture
+def faulty_inputs(tmp_path: Path) -> Path:
+    """Inputs with defects: Datapackages `broken` (refused) and `warned` (row without type); Results `empty`
+    (refused) and `partial` (one unparseable file)."""
+    (tmp_path / "datapackages" / "broken").mkdir(parents=True)
+    (tmp_path / "datapackages" / "broken" / "datapackage.json").write_text("")
+    warned = tmp_path / "datapackages" / "warned"
+    warned.mkdir()
+    (warned / "bus.csv").write_text("name;type\nel;bus\npv;\n")
+    schema = {"fields": [{"name": "name"}, {"name": "type"}]}
+    (warned / "datapackage.json").write_text(
+        json.dumps({"resources": [{"name": "bus", "path": "bus.csv", "schema": schema}]})
+    )
+    (tmp_path / "results" / "empty").mkdir(parents=True)
+    (tmp_path / "results" / "empty" / "bhkw-electricity-sequences.csv").write_text("")
+    (tmp_path / "results" / "partial").mkdir()
+    (tmp_path / "results" / "partial" / "bhkw-electricity-sequences.csv").write_text("")
+    (tmp_path / "results" / "partial" / "bhkw-electricity-scalars.csv").write_text("variable_name;2050\ninvest;1\n")
+    return tmp_path
 
-    components = components_by_id(create_app(tmp_path / "datapackages", tmp_path / "results"))
 
-    assert components["datapackage"]["options"] == ["dp_only"]
-    assert components["result-selection"]["options"] == ["result_only"]
+def test_selectors_mark_refused_inputs_and_count_warnings(faulty_inputs: Path) -> None:
+    components = components_by_id(create_app(faulty_inputs / "datapackages", faulty_inputs / "results"))
+
+    broken, warned = components["datapackage"]["options"]
+    assert broken["label"] == "✖ broken"
+    assert broken["disabled"] is True
+    assert "datapackage.json" in broken["title"]
+    assert warned == {"label": "warned ⚠ 2", "value": "warned"}  # row without type, no Bus foreignKeys
+    empty, partial = components["result-selection"]["options"]
+    assert empty == {
+        "label": "✖ empty",
+        "value": "empty",
+        "disabled": True,
+        "title": "no usable Result file; bhkw-electricity-sequences.csv: unparseable (No columns to parse from file), "
+        "skipped",
+    }
+    assert partial == {"label": "partial ⚠ 1", "value": "partial"}
+
+
+def test_inspector_summary_lists_input_warnings_per_input(faulty_inputs: Path) -> None:
+    app = create_app(faulty_inputs / "datapackages", faulty_inputs / "results")
+
+    inputs = inspect_inputs("warned") | {"result-selection.value": ["partial"]}
+    text = rendered(fire(app, inputs, NO_SELECTED_NODE, changed=["result-selection.value"])["inspector"]["children"])
+
+    assert "Datapackage warned: 2 Input Warnings" in text
+    assert "bus line 3: pv has no type, kept as unknown" in text
+    assert "partial: 1 Input Warnings" in text
+    assert "bhkw-electricity-sequences.csv: unparseable" in text
+    assert "refused" not in text
+
+
+def test_selected_refused_input_shows_banner(faulty_inputs: Path) -> None:
+    app = create_app(faulty_inputs / "datapackages", faulty_inputs / "results")
+
+    inputs = inspect_inputs("broken") | {"result-selection.value": ["empty", "partial"]}
+    children = fire(app, inputs, NO_SELECTED_NODE, changed=["datapackage.value"])["inspector"]["children"]
+
+    assert "Datapackage broken refused: datapackage.json missing or invalid" in rendered(children[0])
+    assert "Result empty refused: no usable Result file" in rendered(children[1])
+    assert "partial: 1 Result Entries" in rendered(children)
 
 
 def test_layout_rescans_folders_on_every_load(tmp_path: Path) -> None:
@@ -100,9 +152,9 @@ def test_layout_rescans_folders_on_every_load(tmp_path: Path) -> None:
     assert components_by_id(app)["result-selection"]["options"] == []
 
     (tmp_path / "results" / "late_result").mkdir(parents=True)
-    (tmp_path / "results" / "late_result" / "bhkw-electricity-sequences.csv").write_text("")
+    (tmp_path / "results" / "late_result" / "bhkw-electricity-scalars.csv").write_text("variable_name;2050\ninvest;1\n")
 
-    assert components_by_id(app)["result-selection"]["options"] == ["late_result"]
+    assert components_by_id(app)["result-selection"]["options"] == [{"label": "late_result", "value": "late_result"}]
 
 
 def input_name(spec: dict) -> str:

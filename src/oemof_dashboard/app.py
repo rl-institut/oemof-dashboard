@@ -120,6 +120,45 @@ def input_sequence_items(
     }
 
 
+def input_option(name: str, parsed: datapackage.Datapackage | Result | datapackage.Refused) -> dict:
+    """Selector option for a Datapackage or Result: Refused input marked ✖ with the reason as tooltip and not
+    selectable, input with Input Warnings marked ⚠ n.
+
+    Args:
+        name: Name of the input.
+        parsed: The input as read.
+
+    Returns:
+        Dropdown option.
+    """
+    if isinstance(parsed, datapackage.Refused):
+        return {"label": f"✖ {name}", "value": name, "disabled": True, "title": parsed.reason}
+    return {"label": f"{name} ⚠ {len(parsed.warnings)}" if parsed.warnings else name, "value": name}
+
+
+def warning_list(label: str, warnings: list[str]) -> list[html.Details]:
+    """Input Warnings of one input for the inspector summary.
+
+    Args:
+        label: Input the warnings belong to.
+        warnings: Its Input Warnings.
+
+    Returns:
+        A collapsible list, or nothing without warnings.
+    """
+    if not warnings:
+        return []
+    return [
+        html.Details(
+            open=True,
+            children=[
+                html.Summary(f"{label}: {len(warnings)} Input Warnings"),
+                html.Ul([html.Li(warning) for warning in warnings]),
+            ],
+        )
+    ]
+
+
 def node_link(name: str) -> html.Button:
     """Button that selects a node in the inspector.
 
@@ -360,11 +399,18 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                         html.Label("Datapackage", htmlFor="datapackage"),
                         dcc.Dropdown(
                             id="datapackage",
-                            options=discover_datapackages(datapackages),
+                            options=[
+                                input_option(name, datapackage.read(datapackages / name))
+                                for name in discover_datapackages(datapackages)
+                            ],
                             placeholder="(no Datapackage)",
                         ),
                         html.Label("Result Selection", htmlFor="result-selection"),
-                        dcc.Dropdown(id="result-selection", options=discover_results(results), multi=True),
+                        dcc.Dropdown(
+                            id="result-selection",
+                            options=[input_option(name, read(results / name)) for name in discover_results(results)],
+                            multi=True,
+                        ),
                         html.Hr(),
                         html.Label("Outcome", htmlFor="outcome-picker"),
                         dcc.Dropdown(
@@ -403,15 +449,30 @@ def create_app(datapackages: Path, results: Path) -> Dash:
 
     app.layout = layout
 
+    # Refused input isn't selectable, but may still be selected from before it broke: treat it as not selected.
     def read_selection(selection: list[str] | None) -> dict[str, Result]:
-        # Parsed lazily on selection; `read` re-uses the parse until a Result file changes.
-        return {name: read(results / name) for name in selection or []}
+        # `read` re-uses the parse until a Result file changes.
+        parsed = {name: read(results / name) for name in selection or []}
+        return {name: result for name, result in parsed.items() if isinstance(result, Result)}
+
+    def read_package(name: str | None) -> datapackage.Datapackage | None:
+        package = datapackage.read(datapackages / name) if name else None
+        return package if isinstance(package, datapackage.Datapackage) else None
+
+    def refusal_banners(name: str | None, selection: list[str] | None) -> list[html.Div]:
+        parsed = [(f"Datapackage {name}", datapackage.read(datapackages / name))] if name else []
+        parsed += [(f"Result {result}", read(results / result)) for result in selection or []]
+        return [
+            html.Div(f"{label} refused: {input_.reason}", className="warning")
+            for label, input_ in parsed
+            if isinstance(input_, datapackage.Refused)
+        ]
 
     def chart_cards(charts: list[Chart], selection: list[str] | None, name: str | None) -> list[html.Div]:
         # Only Input Sequences referenced (unbroken) in the selected Datapackage are loaded; any other, e.g. of
         # another Datapackage, shows as missing.
         selected = read_selection(selection)
-        package = datapackage.read(datapackages / name) if name else None
+        package = read_package(name)
         input_items = input_sequence_items(name, package) if package else set()
         wanted = {tuple(item) for chart in charts for item in chart["series"] if tuple(item) in input_items}
         loaded = {item: datapackage.input_sequence(datapackages / name, *item[1:]) for item in wanted}
@@ -420,18 +481,19 @@ def create_app(datapackages: Path, results: Path) -> Dash:
 
     def selected_node_names(name: str | None, selected_nodes: list[dict] | None) -> set[str]:
         # Cytoscape may keep a selection from the previous Datapackage; drop names it doesn't have.
-        if not name or not selected_nodes:
+        package = read_package(name)
+        if not package or not selected_nodes:
             return set()
-        package = datapackage.read(datapackages / name)
         return {node["id"] for node in selected_nodes} & (package.buses.keys() | package.components.keys())
 
     @app.callback(Output("graph", "elements"), Input("datapackage", "value"), Input("result-selection", "value"))
     def draw_graph(name: str | None, selection: list[str] | None) -> list[dict]:
-        if not name:
+        package = read_package(name)
+        if not package:
             return []
         # Flows of the first Result only: one graph can't show several Results' sums.
-        first = read(results / selection[0]) if selection else None
-        return graph_elements(datapackage.read(datapackages / name), first)
+        first = next(iter(read_selection(selection).values()), None)
+        return graph_elements(package, first)
 
     @app.callback(
         Output("outcome-picker", "options"),
@@ -445,10 +507,8 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         selected = read_selection(selection)
         outcomes = set().union(*map(sequence_outcomes, selected.values()), *map(scalar_outcomes, selected.values()))
         nodes = selected_node_names(name, selected_nodes)
-        inputs: set[tuple[str, str, str]] = set()
-        if name:
-            package = datapackage.read(datapackages / name)
-            inputs = input_sequence_items(name, package, nodes or None)
+        package = read_package(name)
+        inputs = input_sequence_items(name, package, nodes or None) if package else set()
         if nodes:
             entries = set().union(*(match(result, package).entries_of(nodes) for result in selected.values()))
             outcomes = {(entry, variable) for entry, variable in outcomes if entry in entries}
@@ -476,7 +536,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         link_clicked = isinstance(ctx.triggered_id, dict)
         if link_clicked and not ctx.triggered[0]["value"]:
             raise PreventUpdate  # new links or chips rendered, not clicked
-        package = datapackage.read(datapackages / name) if name else None
+        package = read_package(name)
         selected = read_selection(selection)
         if package and link_clicked:
             return inspector(package, ctx.triggered_id["node"], selected)
@@ -486,7 +546,8 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         if kept and ctx.triggered_id == "result-selection":
             return inspector(package, min(kept), selected)
         # Nothing selected: summarise the inputs.
-        summary = [html.Div(warning, className="warning") for warning in package.warnings] if package else []
+        summary = refusal_banners(name, selection)
+        summary += warning_list(f"Datapackage {name}", package.warnings) if package else []
         for result_name, result in selected.items():
             summary.append(
                 html.Details(
@@ -497,6 +558,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                     ],
                 )
             )
+            summary += warning_list(result_name, result.warnings)
             if not package:
                 continue
             matching = match(result, package)
@@ -593,8 +655,9 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         Input("datapackage", "value"),
     )
     def offer_sankey(name: str | None) -> tuple[list[str], None, bool, bool]:
-        buses = list(datapackage.read(datapackages / name).buses) if name else []
-        return buses, None, not name, not name
+        package = read_package(name)
+        buses = list(package.buses) if package else []
+        return buses, None, not package, not package
 
     @app.callback(Output("add-bus-balance", "disabled"), Input("sankey-bus", "value"))
     def offer_bus_balance(bus: str | None) -> bool:
