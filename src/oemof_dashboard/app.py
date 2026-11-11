@@ -1,6 +1,7 @@
 """Dash layout and callbacks of the Explorer."""
 
 import base64
+import functools
 import math
 import uuid
 from decimal import Decimal
@@ -31,6 +32,15 @@ from oemof_dashboard.dashboard import from_json, to_json
 from oemof_dashboard.matching import Matching, match
 from oemof_dashboard.result import Result, read, scalar_outcomes, sequence_outcomes
 
+# The parts of a chart card (id without its chart, prop) an edit re-renders; see `update_card`.
+CARD_UPDATES = [
+    ({"type": "chart-card"}, "className"),
+    ({"type": "chart-field", "field": "title"}, "placeholder"),
+    ({"type": "chart-chips"}, "children"),
+    ({"type": "chart-colours"}, "children"),
+    ({"type": "chart-notices"}, "children"),
+    ({"type": "chart-graph"}, "figure"),
+]
 MIN_MATCH_RATIO = 0.5  # below it, the selected Datapackage likely belongs to another Result
 ACCENT_COLOUR = "#2563eb"
 # Cytoscape rounds the zoom up to a power of 2 before applying "min-zoomed-font-size", so Component labels
@@ -252,7 +262,7 @@ def parameter_cell(value: float | str) -> html.Td:
     Returns:
         Table cell.
     """
-    if isinstance(value, float):
+    if isinstance(value, int | float) and not isinstance(value, bool):
         rounded = f"{value:.4g}"
         # Decimal writes 1.235e+05 as 123500; tiny, huge, NaN and inf values keep the short exponent form.
         shown = format(Decimal(rounded), "f") if 1e-4 <= abs(value) < 1e9 else rounded
@@ -309,7 +319,7 @@ def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Re
         html.Li(
             [
                 f"{key}: {ref.resource} × {ref.column}",
-                " (broken: column missing)"
+                " (column missing, can't be drawn)"
                 if ref.broken
                 else add_series_button((package_name, ref.resource, ref.column)),
             ]
@@ -437,7 +447,7 @@ def chart_card(
                     html.Label(
                         [
                             series_label(series_item(item)),
-                            # dcc.Input doesn't list type "color" but passes it to the native <input>; see `cli.main`.
+                            # dcc.Input doesn't list type "color" but passes it to the native <input>; see `create_app`.
                             dcc.Input(
                                 id={"type": "chart-colour", "chart": chart_id, "series": item},
                                 type="color",
@@ -482,11 +492,13 @@ def chart_index(charts: list[Chart], chart_id: str) -> int:
     raise PreventUpdate
 
 
-def edited_chart(charts: list[Chart]) -> tuple[int, Chart]:
-    """Apply the card control change that triggered the running callback (read from `ctx`) to its chart.
+def edited_chart(charts: list[Chart], triggered: list[dict], trigger: dict | None) -> tuple[int, Chart]:
+    """Apply the card control change that triggered a callback to its chart.
 
     Args:
         charts: Charts store content before the change.
+        triggered: The callback's `ctx.triggered`: changed inputs with their values.
+        trigger: The callback's `ctx.triggered_id`: id of the changed control.
 
     Returns:
         Index of the chart in the store and the changed chart.
@@ -495,11 +507,11 @@ def edited_chart(charts: list[Chart]) -> tuple[int, Chart]:
         PreventUpdate: If no single control was changed by the user, a colour reset wasn't clicked, the colour is
             invalid or nothing changed.
     """
-    if not ctx.triggered or len(ctx.triggered) != 1:
+    if not triggered or len(triggered) != 1:
         # A rendered card fires with all its inputs at once (at least title, type, width, series), a removed last
-        # card with none; a user edit changes one.
+        # card with none (Dash then gives a falsy one-item `ctx.triggered`); a user edit changes one.
         raise PreventUpdate
-    trigger, value = ctx.triggered_id, ctx.triggered[0]["value"]
+    value = triggered[0]["value"]
     index = chart_index(charts, trigger["chart"])
     chart = dict(charts[index])
     if trigger["type"] == "chart-colour-reset":
@@ -538,6 +550,9 @@ def create_app(datapackages: Path, results: Path) -> Dash:
     """
     cyto.load_extra_layouts()  # for "cose-bilkent"
     app = Dash(__name__, title="oemof Dashboard")
+    # Debug mode's props check throws on the chart cards' colour inputs: dcc.Input doesn't list type "color", though
+    # it passes it to the native <input>. An explicit `dev_tools_props_check` in `run` still wins.
+    app.run = functools.partial(app.run, dev_tools_props_check=False)
 
     def layout() -> html.Div:
         # Dash calls a layout function on every page load, so a refresh rescans both folders.
@@ -783,6 +798,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
 
     # A clicked node link or chart chip selects its node in the graph, which updates "selectedNodeData".
     # Selecting via `elements` instead would miss a node re-selected after a tap: elements only patch on change.
+    # str.replace, not an f-string: the JS braces would all need doubling.
     app.clientside_callback(
         """(_links, _chips) => {
             const context = window.dash_clientside.callback_context;
@@ -973,18 +989,13 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         prevent_initial_call=True,
     )
     def edit_chart(_fields: list, _colours: list, _resets: list, charts: list[Chart]) -> Patch:
-        index, chart = edited_chart(charts)
+        index, chart = edited_chart(charts, ctx.triggered, ctx.triggered_id)
         patched_charts = Patch()
         patched_charts[index] = chart
         return patched_charts
 
     @app.callback(
-        Output({"type": "chart-card", "chart": MATCH}, "className"),
-        Output({"type": "chart-field", "field": "title", "chart": MATCH}, "placeholder"),
-        Output({"type": "chart-chips", "chart": MATCH}, "children"),
-        Output({"type": "chart-colours", "chart": MATCH}, "children"),
-        Output({"type": "chart-notices", "chart": MATCH}, "children"),
-        Output({"type": "chart-graph", "chart": MATCH}, "figure"),
+        [Output(part | {"chart": MATCH}, prop) for part, prop in CARD_UPDATES],
         Input({"type": "chart-field", "field": ALL, "chart": MATCH}, "value"),
         Input({"type": "chart-colour", "chart": MATCH, "series": ALL}, "value"),
         Input({"type": "chart-colour-reset", "chart": MATCH, "series": ALL}, "n_clicks"),
@@ -1002,18 +1013,11 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         charts: list[Chart],
         selection: list[str] | None,
         name: str | None,
-    ) -> tuple:
-        _, chart = edited_chart(charts)
+    ) -> list:
+        _, chart = edited_chart(charts, ctx.triggered, ctx.triggered_id)
         (card,) = chart_cards([chart], selection, name)
-        chart_id = chart["id"]
-        return (
-            card.className,
-            card[{"type": "chart-field", "field": "title", "chart": chart_id}].placeholder,
-            card[{"type": "chart-chips", "chart": chart_id}].children,
-            card[{"type": "chart-colours", "chart": chart_id}].children,
-            card[{"type": "chart-notices", "chart": chart_id}].children,
-            card[{"type": "chart-graph", "chart": chart_id}].figure,
-        )
+        searched = html.Div(card)  # component lookup searches children only, not the card itself
+        return [getattr(searched[part | {"chart": chart["id"]}], prop) for part, prop in CARD_UPDATES]
 
     @app.callback(
         Output("charts-store", "data", allow_duplicate=True),

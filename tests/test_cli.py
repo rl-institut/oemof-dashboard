@@ -161,7 +161,7 @@ def test_main_debug_only_with_flag(launched: tuple[MagicMock, MagicMock], tmp_pa
     main([str(tmp_path), "--debug"])
 
     assert run.call_args.kwargs["debug"] is True
-    assert run.call_args.kwargs["dev_tools_props_check"] is False  # the colour input's type "color" isn't listed
+    assert run.call_args.kwargs["dev_tools_props_check"] is False  # set by `create_app`, see its test
 
 
 def test_main_opens_browser_once_under_debug_reloader(launched: tuple[MagicMock, MagicMock], tmp_path: Path) -> None:

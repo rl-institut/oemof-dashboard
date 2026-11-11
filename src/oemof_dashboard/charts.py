@@ -347,9 +347,14 @@ def stacked_area(
     figure.update_yaxes(matches="y")
     figure.update_layout(margin={"l": 40, "r": 10, "t": 10, "b": 30})
     traces = list(_traces(series, results, colours, inputs))
+
+    def is_not_all_zero(ranked_trace: tuple[int, tuple]) -> bool:
+        _rank, (_colour, _result_index, _name, column) = ranked_trace
+        return not _all_zero(column)
+
     # Stable sort: all-zero series go to the bottom of their Result's stack, so their fill can't cover the others;
     # the legend keeps series order through `legendrank`.
-    ranked = sorted(enumerate(traces), key=lambda ranked_trace: not _all_zero(ranked_trace[1][-1]))
+    ranked = sorted(enumerate(traces), key=is_not_all_zero)
     for rank, (colour, result_index, name, column) in ranked:
         line = {"color": colour, "width": STACK_LINE_WIDTH} | _input_shape(result_index)
         if column is None:

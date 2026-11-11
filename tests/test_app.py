@@ -7,6 +7,7 @@ import time
 import urllib.request
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -89,6 +90,13 @@ def test_server_starts_and_serves_page(adlershof_app: Dash) -> None:
         except OSError:
             if time.monotonic() > deadline:
                 raise
+
+
+def test_debug_run_skips_props_check_rejecting_colour_inputs(shipped_data: Path) -> None:
+    with patch.object(Dash, "run") as run:
+        create_app(shipped_data / "datapackages", shipped_data / "results").run(debug=True)
+
+    run.assert_called_once_with(debug=True, dev_tools_props_check=False)
 
 
 def test_layout_has_explorer_panes(adlershof_app: Dash) -> None:
@@ -775,6 +783,7 @@ def test_inspector_shows_dash_for_empty_sections(two_results: tuple) -> None:
         (123456.789, "123500", "123456.789"),
         (0.123456, "0.1235", "0.123456"),
         (1.0, "1", "1.0"),
+        (123456, "123500", "123456"),  # an int Parameter is a number like a float
         (1e-10, "1e-10", "1e-10"),
         (1e300, "1e+300", "1e+300"),
         ("{}", "–", None),
