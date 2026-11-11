@@ -3,7 +3,7 @@
 import base64
 import math
 import uuid
-from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 
 import dash_cytoscape as cyto
@@ -224,9 +224,9 @@ def outcome_rows(package: datapackage.Datapackage, name: str, results: dict[str,
         results: Result Selection as Result name → Result.
 
     Returns:
-        Dash children: a table of Outcomes with "in n/m Results", and a line per Result without Outcomes.
+        Dash children: a table of Outcomes, and a line per Result without Outcomes.
     """
-    counts: Counter[tuple[str, str]] = Counter()
+    outcomes: set[tuple[str, str]] = set()
     without = []
     for result_name, result in results.items():
         entries = match(result, package).entries_of({name})
@@ -234,18 +234,30 @@ def outcome_rows(package: datapackage.Datapackage, name: str, results: dict[str,
             without.append(html.Div(f"{result_name}: no Outcomes in this Result"))
         for entry in entries:
             found = result.entries[entry]
-            counts.update((entry, variable) for variable in {*found.scalars, *found.sequences.columns})
+            outcomes.update((entry, variable) for variable in {*found.scalars, *found.sequences.columns})
     rows = [
-        html.Tr(
-            [
-                html.Td(f"{entry} · {variable}"),
-                html.Td(f"in {count}/{len(results)} Results"),
-                html.Td(add_series_button((entry, variable))),
-            ]
-        )
-        for (entry, variable), count in sorted(counts.items())
+        html.Tr([html.Td(f"{entry} · {variable}"), html.Td(add_series_button((entry, variable)))])
+        for entry, variable in sorted(outcomes)
     ]
     return [html.Table(rows), *without]
+
+
+def parameter_cell(value: float | str) -> html.Td:
+    """Table cell for a Parameter value: a number with 4 significant digits and its full value as tooltip, an empty
+    object ("{}") as "–", other text as is.
+
+    Args:
+        value: Parameter value.
+
+    Returns:
+        Table cell.
+    """
+    if isinstance(value, float):
+        rounded = f"{value:.4g}"
+        # Decimal writes 1.235e+05 as 123500; tiny, huge, NaN and inf values keep the short exponent form.
+        shown = format(Decimal(rounded), "f") if 1e-4 <= abs(value) < 1e9 else rounded
+        return html.Td(shown, title=str(value))
+    return html.Td("–" if value == "{}" else value)
 
 
 def add_series_button(item: tuple[str, ...]) -> html.Button:
@@ -281,6 +293,29 @@ def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Re
     scalars = {key: value for key, value in node.parameters.items() if not isinstance(value, datapackage.InputSequence)}
     sequences = {key: value for key, value in node.parameters.items() if isinstance(value, datapackage.InputSequence)}
     input_scalars = input_scalar_items(package_name, package, {name})
+    parameter_rows = [
+        html.Tr(
+            [
+                html.Td(key),
+                parameter_cell(value),
+                html.Td(
+                    add_series_button((package_name, name, key)) if (package_name, name, key) in input_scalars else []
+                ),
+            ]
+        )
+        for key, value in scalars.items()
+    ]
+    sequence_items = [
+        html.Li(
+            [
+                f"{key}: {ref.resource} × {ref.column}",
+                " (broken: column missing)"
+                if ref.broken
+                else add_series_button((package_name, ref.resource, ref.column)),
+            ]
+        )
+        for key, ref in sequences.items()
+    ]
     return [
         html.H4(name),
         html.Div(f"type: {node.type} · resource: {node.resource}"),
@@ -288,36 +323,9 @@ def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Re
         html.Label("Connections"),
         html.Div([node_link(neighbour) for neighbour in neighbours] or "–"),
         html.Label("Parameters"),
-        html.Table(
-            [
-                html.Tr(
-                    [
-                        html.Td(key),
-                        html.Td(str(value).removesuffix(".0")),
-                        html.Td(
-                            add_series_button((package_name, name, key))
-                            if (package_name, name, key) in input_scalars
-                            else []
-                        ),
-                    ]
-                )
-                for key, value in scalars.items()
-            ]
-        ),
+        html.Table(parameter_rows) if parameter_rows else "–",
         html.Label("Input Sequences"),
-        html.Ul(
-            [
-                html.Li(
-                    [
-                        f"{key}: {ref.resource} × {ref.column}",
-                        " (broken: column missing)"
-                        if ref.broken
-                        else add_series_button((package_name, ref.resource, ref.column)),
-                    ]
-                )
-                for key, ref in sequences.items()
-            ]
-        ),
+        html.Ul(sequence_items) if sequence_items else "–",
         *([html.Label("Outcomes"), *outcome_rows(package, name, results)] if results else []),
     ]
 
@@ -557,6 +565,15 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                         ),
                         html.Hr(),
                         html.Label("Outcome", htmlFor="outcome-picker"),
+                        html.Div(
+                            id="outcome-filter",
+                            className="filter-chip",
+                            hidden=True,
+                            children=[
+                                html.Span(id="outcome-filter-node"),
+                                html.Button("×", id="outcome-filter-clear", title="Show all nodes"),
+                            ],
+                        ),
                         dcc.Dropdown(
                             id="outcome-picker", options=[], multi=True, placeholder="Outcome / Input Sequence…"
                         ),
@@ -692,6 +709,23 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         return [
             {"label": series_label(item), "value": series_key(item)} for item in [*sorted(outcomes), *sorted(inputs)]
         ]
+
+    @app.callback(
+        Output("outcome-filter", "hidden"),
+        Output("outcome-filter-node", "children"),
+        Input("graph", "selectedNodeData"),
+        Input("datapackage", "value"),
+    )
+    def show_filter(selected_nodes: list[dict] | None, name: str | None) -> tuple[bool, str]:
+        node = selected_node(name, selected_nodes)
+        return node is None, f"Only {node}" if node else ""
+
+    # Deselecting in the graph updates "selectedNodeData", which clears the chip, the picker filter and inspector.
+    app.clientside_callback(
+        """(_clicks) => { document.getElementById("graph")?._cyreg?.cy?.$(":selected").unselect(); }""",
+        Input("outcome-filter-clear", "n_clicks"),
+        prevent_initial_call=True,
+    )
 
     # The graph's node selection is the one selection state (node or none, see `selected_node`): a tap, a node
     # link or a chart chip selects a node, tapping empty space deselects it; the inspector, like the Outcome

@@ -19,7 +19,13 @@ button { margin-top: 8px; }
 
 .node-link { margin: 2px 4px 2px 0; padding: 1px 6px; border: none; border-radius: 3px; background: #fbe6d2; color: #8a4510; cursor: pointer; }
 .warning { margin-bottom: 6px; padding: 4px 6px; background: #fff4d6; border-left: 3px solid #e0a800; }
-#inspector td { padding: 1px 6px 1px 0; vertical-align: top; word-break: break-all; }
+#inspector td { padding: 1px 6px 1px 0; vertical-align: middle; white-space: nowrap; }
+#inspector td:first-child { width: 100%; white-space: normal; word-break: break-all; }
+#inspector button:not(.node-link) { white-space: nowrap; }
+#inspector td button, #inspector li button { margin-top: 0; }
+.filter-chip { display: inline-flex; align-items: center; gap: 4px; margin: 2px 0 4px; padding: 1px 2px 1px 8px; border-radius: 10px; background: #fbe6d2; color: #8a4510; }
+.filter-chip[hidden] { display: none; }
+.filter-chip button { margin: 0; padding: 0 6px; border: none; background: none; color: inherit; cursor: pointer; }
 .chart-card.full { grid-column: 1 / -1; }
 .chart-controls { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .chart-controls > * { flex: none; }
