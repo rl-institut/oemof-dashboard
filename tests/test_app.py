@@ -520,6 +520,58 @@ def test_graph_callback_draws_flows_of_first_result(adlershof_app: Dash) -> None
     assert drawn[("cool_process-absorption", "cool_process")]["classes"] == "flow"
 
 
+def graph_styles(app: Dash) -> dict[str, dict]:
+    """Styles of the graph's stylesheet by selector."""
+    return {rule["selector"]: rule["style"] for rule in components_by_id(app)["graph"]["stylesheet"]}
+
+
+def test_graph_layout_is_deterministic_cose_bilkent(adlershof_app: Dash) -> None:
+    layout = components_by_id(adlershof_app)["graph"]["layout"]
+
+    assert layout["name"] == "cose-bilkent"
+    assert layout["randomize"] is False
+
+
+def test_graph_zoom_is_limited_and_has_fit_button(adlershof_app: Dash) -> None:
+    components = components_by_id(adlershof_app)
+    graph = components["graph"]
+
+    assert graph["minZoom"] == pytest.approx(0.2)
+    assert graph["maxZoom"] == pytest.approx(3)
+    assert graph["wheelSensitivity"] < 1
+    assert components["graph-fit"]["children"] == "Fit"
+
+
+def test_graph_buses_stand_out_and_component_labels_hide_when_zoomed_out(adlershof_app: Dash) -> None:
+    styles = graph_styles(adlershof_app)
+
+    assert styles[".bus"]["font-weight"] == "bold"
+    assert styles[".bus"]["width"] > styles["node"]["width"]
+    assert styles[".bus"]["shape"] != styles["node"].get("shape", "ellipse")
+    assert styles[".component"]["min-zoomed-font-size"] > 0
+    assert "min-zoomed-font-size" not in styles[".bus"]
+
+
+def test_graph_shows_flow_sums_only_on_edges_of_selected_node(adlershof_app: Dash) -> None:
+    styles = graph_styles(adlershof_app)
+
+    assert "label" not in styles[".flow"]
+    assert styles[".flow.connected"]["label"] == "data(label)"
+    assert styles[".foreign"]["label"] == "data(label)"  # a warning, not a sum: always shown
+
+
+def test_graph_highlights_selected_node_neighbours_and_edges_without_fading(adlershof_app: Dash) -> None:
+    styles = graph_styles(adlershof_app)
+
+    selected = styles["node:selected"]
+    neighbour = styles[".neighbour"]
+    assert selected["border-width"] > neighbour["border-width"] > 0
+    assert selected["border-color"] == neighbour["border-color"]
+    assert selected["width"] > styles["node"]["width"]
+    assert styles[".connected"]["width"] > styles["edge"]["width"]
+    assert not any("opacity" in style for style in styles.values())
+
+
 def rendered(children: list) -> str:
     """Dash children as the JSON sent to the browser."""
     return json.dumps(children, cls=PlotlyJSONEncoder, ensure_ascii=False)

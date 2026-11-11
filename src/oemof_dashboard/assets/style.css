@@ -7,7 +7,7 @@ button { margin-top: 8px; }
 #inspector { border-right: none; border-left: 1px solid #ddd; }
 .center { overflow-y: auto; padding: 8px; }
 
-.graph-pane { resize: vertical; overflow: hidden; height: 45vh; min-height: 150px; border: 1px solid #ddd; background: #fff; }
+.graph-pane { position: relative; resize: vertical; overflow: hidden; height: 45vh; min-height: 150px; border: 1px solid #ddd; background: #fff; }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
 .chart-card { background: #fff; border: 1px solid #ddd; padding: 4px; }
 .notice { background: #fff4d6; padding: 4px 8px; }
@@ -23,3 +23,4 @@ button { margin-top: 8px; }
 .chart-controls button { margin-top: 0; }
 .chart-colours label { display: inline-block; margin: 4px 8px 0 0; font-weight: normal; }
 .chart-colour { width: 70px; margin-left: 4px; }
+.graph-fit { position: absolute; top: 4px; right: 4px; z-index: 1; }
