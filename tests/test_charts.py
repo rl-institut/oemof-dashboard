@@ -7,6 +7,7 @@ from conftest import package_of, result_of
 
 from oemof_dashboard import datapackage
 from oemof_dashboard.charts import (
+    BUS_BALANCE_HEIGHT,
     CHART_TYPES,
     PALETTE,
     Chart,
@@ -106,23 +107,35 @@ def chart(**overrides: object) -> Chart:
 
 
 @pytest.mark.parametrize(
-    ("series", "title", "expected"),
+    ("series", "expected"),
     [
-        ([list(BHKW_FLOW)], None, "bhkw-electricity · flow"),
-        (
-            [list(BHKW_FLOW), list(BATTERY_CONTENT)],
-            None,
-            "bhkw-electricity · flow, battery_large-None · storage_content",
-        ),
-        ([list(BHKW_FLOW)] * 4, None, "bhkw-electricity · flow, bhkw-electricity · flow, bhkw-electricity · flow +1"),
-        ([], None, "Empty chart"),
-        ([list(BHKW_FLOW)], "CHP output", "CHP output"),
+        ([list(BHKW_FLOW)], "bhkw-electricity · flow"),
+        ([list(BHKW_FLOW), list(BATTERY_CONTENT)], "bhkw-electricity · flow, battery_large-None · storage_content"),
+        ([list(BHKW_FLOW)] * 4, "bhkw-electricity · flow, bhkw-electricity · flow, bhkw-electricity · flow +1"),
+        ([], "Empty chart"),
     ],
 )
-def test_title_defaults_to_series_unless_set(adlershof: Result, series: list, title: str | None, expected: str) -> None:
-    figure, _ = chart_figure(chart(series=series, title=title), {"adlershof": adlershof})
+def test_auto_title_names_the_first_series(series: list, expected: str) -> None:
+    assert auto_title(chart(series=series)) == expected
 
-    assert figure.layout.title.text == expected
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({}, "Sankey"),
+        ({"bus": "heat"}, "Sankey · heat"),
+        ({"type": "bus_balance", "bus": "el"}, "Bus balance · el"),
+    ],
+)
+def test_auto_title_of_system_chart_names_type_and_bus(config: dict, expected: str) -> None:
+    assert auto_title(system(**config)) == expected
+
+
+@pytest.mark.parametrize("title", [None, "CHP output"])
+def test_figure_has_no_title_the_card_shows_it(adlershof: Result, title: str | None) -> None:
+    figure, _ = chart_figure(chart(title=title), {"adlershof": adlershof})
+
+    assert figure.layout.title.text is None
 
 
 def test_emptied_chart_is_empty_figure(adlershof: Result) -> None:
@@ -311,7 +324,6 @@ def test_bar_chart_of_one_result_has_one_bar_per_outcome_coloured_by_outcome() -
         ("bar", "pv-electricity · total", ["base"], [5.0], "#eb6834"),
     ]
     assert figure.layout.barmode == "group"
-    assert figure.layout.title.text == "pv-electricity · invest, pv-electricity · total"
     assert notices == []
 
 
@@ -516,13 +528,14 @@ def system(**overrides: object) -> Chart:
 
 
 @pytest.mark.parametrize(("bus", "title", "link_count"), [(None, "Sankey", 3), ("heat", "Sankey · heat", 1)])
-def test_sankey_chart_filters_by_its_bus_and_is_titled_after_it(bus: str | None, title: str, link_count: int) -> None:
+def test_sankey_chart_filters_by_its_bus_and_is_auto_titled_after_it(
+    bus: str | None, title: str, link_count: int
+) -> None:
     result = flows(**{"hp-heat": [1.0], "el-hp": [1.0], "pv-el": [1.0]})
 
     figure, _ = chart_figure(system(bus=bus), {"base": result}, package=TWO_BUSES)
 
     assert len(sankey_links(figure.data[0])) == link_count
-    assert figure.layout.title.text == title
 
 
 def test_sankey_chart_without_datapackage_is_empty_with_notice() -> None:
@@ -623,13 +636,12 @@ def test_bus_balance_counts_flows_not_in_datapackage_and_lists_unmatched_entries
     assert notices == ["base: no flow for el-demand", "base: unmatched, left out: el-nowhere"]
 
 
-def test_bus_balance_chart_is_titled_after_its_bus() -> None:
+def test_bus_balance_chart_balances_its_bus() -> None:
     result = flows(**{"pv-el": [1.0], "el-demand": [1.0]})
 
     figure, _ = chart_figure(system(type="bus_balance", bus="el"), {"base": result}, package=TWO_BUSES)
 
     assert stacks(figure) == [("pv", [1.0]), ("demand", [-1.0])]
-    assert figure.layout.title.text == "Bus balance · el"
 
 
 def test_bus_balance_chart_without_datapackage_is_empty_with_notice() -> None:
@@ -682,3 +694,77 @@ def test_flow_not_in_datapackage_still_gives_chips_as_the_graph_draws_it() -> No
     )
 
     assert nodes == ["pv", "heat"]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        chart(),
+        chart(type="stacked_area"),
+        chart(type="duration_curve"),
+        bar(),
+        system(),
+        system(type="bus_balance", bus="el"),
+    ],
+)
+def test_legend_is_horizontal_below_the_plot(config: Chart) -> None:
+    figure, _ = chart_figure(config, {"base": flows(**{"pv-el": [1.0]})}, package=TWO_BUSES)
+
+    assert figure.layout.legend.orientation == "h"
+    assert figure.layout.legend.y < 0
+    assert figure.layout.legend.traceorder == "normal"  # plotly reverses stacked traces' legend by default
+
+
+def test_bus_balance_grows_taller_with_its_legend() -> None:
+    few = flows(**{"pv-el": [1.0], "el-demand": [1.0]})
+    package = package_of(["el"], [(f"source{index}", "el") for index in range(20)])
+    many = flows(**{f"source{index}-el": [1.0] for index in range(20)})
+
+    few_height = bus_balance({"base": few}, TWO_BUSES, "el")[0].layout.height
+    many_height = bus_balance({"base": many}, package, "el")[0].layout.height
+
+    assert many_height > few_height >= BUS_BALANCE_HEIGHT
+
+
+@pytest.mark.parametrize(
+    ("config", "date_axis"),
+    [
+        (chart(), True),
+        (chart(type="stacked_area"), True),
+        (chart(type="duration_curve"), False),
+        (system(type="bus_balance", bus="el"), True),
+    ],
+)
+def test_time_series_hover_shows_full_names_date_and_hour_and_two_decimals_unified(
+    config: Chart, date_axis: bool
+) -> None:
+    result = flows(**{"pv-el": [1.0], "bhkw-electricity": [1.0]})
+
+    figure, _ = chart_figure(config, {"base": result}, package=TWO_BUSES)
+
+    assert figure.layout.hovermode == "x unified"
+    assert figure.layout.hoverlabel.namelength == -1
+    assert figure.layout.yaxis.hoverformat == ",.2f"
+    assert figure.layout.xaxis.hoverformat == ("%Y-%m-%d %H:%M" if date_axis else None)
+
+
+def test_stacked_area_puts_all_zero_series_at_the_bottom_of_each_result_stack_with_thin_lines() -> None:
+    series = [("pv-el", "flow"), ("battery-el", "flow"), ("wind-el", "flow")]
+    results = {
+        "base": flows(**{"pv-el": [3.0, 1.0], "battery-el": [0.0, 0.0], "wind-el": [2.0, 0.0]}),
+        "variant": flows(**{"pv-el": [3.0, 1.0], "battery-el": [1.0, 0.0], "wind-el": [2.0, 0.0]}),
+    }
+
+    figure, _ = chart_figure(chart(type="stacked_area", series=[list(item) for item in series]), results)
+
+    def entry(trace: go.Scatter) -> str:
+        return trace.name.split(" · ")[0]
+
+    stacked = {
+        axis: [(entry(trace), trace.line.color) for trace in figure.data if trace.xaxis == axis] for axis in ("x", "x2")
+    }
+    pv, battery, wind = (("pv-el", PALETTE[0]), ("battery-el", PALETTE[1]), ("wind-el", PALETTE[2]))
+    assert stacked == {"x": [battery, pv, wind], "x2": [pv, battery, wind]}  # stacked bottom to top
+    assert {trace.line.width for trace in figure.data} == {0.5}
+    legend = [entry(trace) for trace in sorted(figure.data, key=lambda trace: trace.legendrank)]
+    assert list(dict.fromkeys(legend)) == ["pv-el", "battery-el", "wind-el"]

@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 import urllib.request
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pandas as pd
@@ -15,8 +16,11 @@ from plotly.utils import PlotlyJSONEncoder
 
 from oemof_dashboard import datapackage
 from oemof_dashboard.app import create_app, graph_elements, input_scalar_items, inspector
+from oemof_dashboard.charts import PALETTE
 from oemof_dashboard.result import Result, read
 
+# The pattern-matching inputs of the card edit callbacks, none matched.
+NO_EDIT_INPUTS = {"chart-field": [], "chart-colour": [], "chart-colour-reset": []}
 WIND_PROFILE = "input:adlershof/volatile_profile/wind-profile"
 BHKW_EFFICIENCY = "input:adlershof/bhkw/electric_efficiency"
 EXPLORER_IDS = [
@@ -36,6 +40,8 @@ EXPLORER_IDS = [
     "dashboard-upload",
     "dashboard-notice",
     "inspector",
+    "toggle-left-pane",
+    "toggle-inspector",
 ]
 
 
@@ -200,7 +206,8 @@ def fire(
     key = next(
         key
         for key, callback in app.callback_map.items()
-        if [input_name(spec) for spec in callback["inputs"] + callback["state"]] == [*inputs, *states]
+        if "callback" in callback  # server-side, not a clientside callback on the same inputs
+        and [input_name(spec) for spec in callback["inputs"] + callback["state"]] == [*inputs, *states]
     )
     outputs = [
         {"id": concrete(output.rsplit(".", 1)[0], changed), "property": output.rsplit(".", 1)[1]}
@@ -226,15 +233,27 @@ def concrete(output_id: str, changed: list[str]) -> str | dict:
     return {key: trigger[key] if value == ["MATCH"] else value for key, value in json.loads(output_id).items()}
 
 
-def set_props(tree: object, component_id: dict, props: dict) -> None:
-    """Update the props of the component with this id in a rendered component tree, as the browser does."""
+def components(tree: object) -> Iterator[dict]:
+    """Props of every component in a rendered component tree."""
     if isinstance(tree, list):
         for item in tree:
-            set_props(item, component_id, props)
+            yield from components(item)
     elif isinstance(tree, dict) and "props" in tree:
-        if tree["props"].get("id") == component_id:
-            tree["props"].update(props)
-        set_props(tree["props"].get("children"), component_id, props)
+        yield tree["props"]
+        yield from components(tree["props"].get("children"))
+
+
+def set_props(tree: object, component_id: dict, props: dict) -> None:
+    """Update the props of the component with this id in a rendered component tree, as the browser does."""
+    for found in components(tree):
+        if found.get("id") == component_id:
+            found.update(props)
+
+
+def props_of(tree: object, component_id: dict) -> dict:
+    """Props of the one component with this id in a rendered component tree."""
+    (props,) = [found for found in components(tree) if found.get("id") == component_id]
+    return props
 
 
 def patched(value: list, update: object) -> list:
@@ -279,6 +298,7 @@ class Page:
         self.charts: list[dict] = []
         self.cards: list = []
         self.datapackage: str | None = "adlershof"
+        self.added: str | None = None  # id of the last added chart, for the browser to scroll to
 
     def apply(self, response: dict) -> None:
         """Apply a callback response to the charts store, the cards and props of single cards' components."""
@@ -287,6 +307,8 @@ class Page:
                 self.charts = patched(self.charts, props["data"])
             elif output == "charts":
                 self.cards = patched(self.cards, props["children"])
+            elif output == "added-chart":
+                self.added = props["data"]
             elif output.startswith("{"):
                 set_props(self.cards, json.loads(output), props)
 
@@ -335,14 +357,14 @@ class Page:
         """Pick a Bus filter, or none for the whole system, and click "Add Sankey"."""
         self.add_system("add-sankey", bus)
 
-    def change(self, component_id: dict, value: object) -> set[str]:
-        """Change the value of one card control: both edit callbacks (store and card) fire on the same state.
+    def change(self, component_id: dict, value: object, prop: str = "value") -> set[str]:
+        """Change a prop of one card control: both edit callbacks (store and card) fire on the same state.
 
         Returns the ids of the updated outputs."""
-        set_props(self.cards, component_id, {"value": value})
-        inputs: dict[str, object] = {"chart-field": [], "chart-colour": []}
-        inputs[component_id["type"]] = [{"id": component_id, "property": "value", "value": value}]
-        changed = [f"{pattern(component_id)}.value"]
+        set_props(self.cards, component_id, {prop: value})
+        inputs: dict[str, object] = dict(NO_EDIT_INPUTS)
+        inputs[component_id["type"]] = [{"id": component_id, "property": prop, "value": value}]
+        changed = [f"{pattern(component_id)}.{prop}"]
         responses = [
             fire(self.app, inputs, {"charts-store.data": self.charts}, changed),
             fire(self.app, inputs, self.states(), changed),
@@ -358,6 +380,11 @@ class Page:
     def colour(self, chart: int, series: str, value: str) -> set[str]:
         """Type a colour override for one series of a card; return the ids of the updated outputs."""
         return self.change({"type": "chart-colour", "chart": self.charts[chart]["id"], "series": series}, value)
+
+    def reset_colour(self, chart: int, series: str, clicks: int | None = 1) -> set[str]:
+        """Click the reset button of a series' colour override; return the ids of the updated outputs."""
+        component_id = {"type": "chart-colour-reset", "chart": self.charts[chart]["id"], "series": series}
+        return self.change(component_id, clicks, "n_clicks")
 
     def click(self, action: str, chart: int) -> None:
         """Click a card's up, down or remove button."""
@@ -389,6 +416,24 @@ def test_added_chart_is_a_half_width_line_chart_rendered_for_result_selection(pa
         "width": "half",
     }
     assert "bhkw-electricity · flow · adlershof" in json.dumps(page.cards, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "add",
+    [
+        lambda page: page.add("bhkw-electricity/flow"),
+        lambda page: page.add_sankey(),
+        lambda page: page.add_system("add-bus-balance", "gas"),
+        lambda page: page.add_system("bus-balance", inspector_bus="gas"),
+    ],
+    ids=["add chart", "add Sankey", "add Bus balance", "inspector add Bus balance"],
+)
+def test_every_add_path_names_the_added_chart_to_scroll_to(page: Page, add: Callable[[Page], None]) -> None:
+    page.add("wind-electricity/flow")
+
+    add(page)
+
+    assert page.added == page.charts[-1]["id"]
 
 
 def test_result_selection_change_rerenders_stored_charts(page: Page) -> None:
@@ -461,22 +506,44 @@ def test_series_options_offer_result_sequences_only(page: Page) -> None:
     assert "invest" not in options  # a Result Scalar
 
 
-@pytest.mark.parametrize(("value", "colours"), [("#123456", {"bhkw-electricity/flow": "#123456"}), ("", {})])
-def test_colour_override_is_set_or_cleared(page: Page, value: str, colours: dict) -> None:
-    page.add("bhkw-electricity/flow")
-    page.colour(0, "bhkw-electricity/flow", "#abcdef")
-
-    page.colour(0, "bhkw-electricity/flow", value)
-
-    assert page.charts[0]["colours"] == colours
-
-
-def test_invalid_colour_is_ignored(page: Page) -> None:
+def test_colour_override_is_set_and_reset(page: Page) -> None:
     page.add("bhkw-electricity/flow")
 
-    page.colour(0, "bhkw-electricity/flow", "red; drop")
+    page.colour(0, "bhkw-electricity/flow", "#123456")
+    assert page.charts[0]["colours"] == {"bhkw-electricity/flow": "#123456"}
+
+    page.reset_colour(0, "bhkw-electricity/flow")
+    assert page.charts[0]["colours"] == {}
+
+
+def test_colour_field_is_a_native_colour_input_showing_the_effective_colour(page: Page) -> None:
+    page.add("bhkw-electricity/flow", "wind-electricity/flow")
+    page.colour(0, "wind-electricity/flow", "#123456")
+
+    def field(series: str) -> dict:
+        return props_of(page.cards, {"type": "chart-colour", "chart": page.charts[0]["id"], "series": series})
+
+    bhkw = field("bhkw-electricity/flow")
+    assert bhkw["type"] == "color"
+    assert bhkw["value"] == PALETTE[0]
+    assert field("wind-electricity/flow")["value"] == "#123456"
+
+
+def test_picking_the_palette_colour_clears_the_override(page: Page) -> None:
+    page.add("bhkw-electricity/flow")
+    page.colour(0, "bhkw-electricity/flow", "#123456")
+
+    page.colour(0, "bhkw-electricity/flow", PALETTE[0])
 
     assert page.charts[0]["colours"] == {}
+
+
+def test_rendered_reset_button_resets_nothing(page: Page) -> None:
+    page.add("bhkw-electricity/flow")
+    page.colour(0, "bhkw-electricity/flow", "#123456")
+
+    # The card update renders the reset button, which fires the edit callbacks unclicked.
+    assert page.reset_colour(0, "bhkw-electricity/flow", clicks=None) == set()
 
 
 def test_charts_move_up_and_down_and_are_removed(page: Page) -> None:
@@ -502,7 +569,12 @@ def test_removing_the_last_card_raises_no_error(page: Page) -> None:
     page.click("remove", 0)
 
     # The removed card's controls were the last ones matching the edit callback's inputs.
-    response = fire(page.app, {"chart-field": [], "chart-colour": []}, {"charts-store.data": page.charts}, changed=[])
+    response = fire(
+        page.app,
+        NO_EDIT_INPUTS,
+        {"charts-store.data": page.charts},
+        changed=[],
+    )
 
     assert response == {}
 
@@ -527,7 +599,7 @@ def test_rendering_a_card_does_not_count_as_editing_it(page: Page) -> None:
 
     response = fire(
         page.app,
-        {"chart-field": fields, "chart-colour": []},
+        NO_EDIT_INPUTS | {"chart-field": fields},
         page.states(),
         changed=[f"{pattern(field['id'])}.value" for field in fields],
     )
@@ -539,7 +611,7 @@ def test_rerendered_colour_field_updates_nothing(page: Page) -> None:
     page.add("bhkw-electricity/flow")
 
     # A card update re-renders its colour fields, which fire the edit callbacks with their unchanged values.
-    assert page.colour(0, "bhkw-electricity/flow", "") == set()
+    assert page.colour(0, "bhkw-electricity/flow", PALETTE[0]) == set()
 
 
 def test_dropping_a_series_drops_its_colour_override(page: Page) -> None:
@@ -862,6 +934,32 @@ def test_type_switches_within_sequence_kind_keeping_series(page: Page, chart_typ
     assert all(option in card for option in ('"line"', '"stacked_area"', '"duration_curve"'))
 
 
+@pytest.mark.parametrize(
+    ("button", "picked", "options"),
+    [
+        (
+            "add-chart",
+            "bhkw-electricity/flow",
+            {"line": "Line", "stacked_area": "Stacked area", "duration_curve": "Duration curve"},
+        ),
+        ("add-chart", "bhkw-electricity/invest", {"bar": "Bar"}),
+        ("add-sankey", None, {"sankey": "Sankey"}),
+        ("add-bus-balance", "gas", {"bus_balance": "Bus balance"}),  # can't switch to Sankey
+    ],
+)
+def test_type_dropdown_shows_readable_type_names(
+    page: Page, button: str, picked: str | None, options: dict[str, str]
+) -> None:
+    if button == "add-chart":
+        page.add(picked)
+    else:
+        page.add_system(button, picked)
+
+    dropdown = props_of(page.cards, {"type": "chart-field", "field": "type", "chart": page.charts[0]["id"]})
+
+    assert dropdown["options"] == options
+
+
 def test_outcome_picker_offers_result_scalars(adlershof_app: Dash) -> None:
     inputs = {"result-selection.value": ["adlershof"], "datapackage.value": None, "graph.selectedNodeData": None}
 
@@ -908,7 +1006,6 @@ def test_added_scalar_outcome_is_a_bar_chart_offering_result_scalars_only(page: 
     (chart,) = page.charts
     assert (chart["kind"], chart["type"], chart["series"]) == ("scalars", "bar", [["bhkw-electricity", "invest"]])
     card = json.dumps(page.cards, ensure_ascii=False)
-    assert '"options": ["bar"]' in card  # type dropdown
     assert '"type": "bar"' in card
     assert "bhkw-electricity/total" in card  # another Result Scalar offered
     assert "bhkw-electricity/flow" not in card  # a Result Sequence
@@ -986,7 +1083,7 @@ def test_sankey_is_added_with_the_picked_bus(page: Page) -> None:
     assert "Sankey · gas" in json.dumps(page.cards, ensure_ascii=False)
 
 
-def test_added_sankey_is_a_system_chart_offering_a_bus_filter_instead_of_series(page: Page) -> None:
+def test_added_sankey_is_a_full_width_system_chart_offering_a_bus_filter_instead_of_series(page: Page) -> None:
     page.add_sankey()
 
     (chart,) = page.charts
@@ -997,7 +1094,7 @@ def test_added_sankey_is_a_system_chart_offering_a_bus_filter_instead_of_series(
         "title": None,
         "series": [],
         "colours": {},
-        "width": "half",
+        "width": "full",
         "bus": None,
     }
     card = json.dumps(page.cards, ensure_ascii=False)
@@ -1036,10 +1133,9 @@ def test_add_bus_balance_in_inspector_adds_a_bus_balance_of_that_bus(page: Page)
     page.add_system("bus-balance", inspector_bus="gas")
 
     (chart,) = page.charts
-    assert (chart["kind"], chart["type"], chart["bus"]) == ("system", "bus_balance", "gas")
+    assert (chart["kind"], chart["type"], chart["bus"], chart["width"]) == ("system", "bus_balance", "gas", "full")
     card = json.dumps(page.cards, ensure_ascii=False)
     assert "Bus balance · gas" in card
-    assert '"options": ["bus_balance"]' in card  # can't switch to Sankey
 
 
 def test_rendering_add_bus_balance_buttons_adds_no_chart(page: Page) -> None:

@@ -15,11 +15,12 @@ from oemof_dashboard import datapackage
 from oemof_dashboard.charts import (
     CHART_TYPES,
     HEX_COLOUR,
-    PALETTE,
+    TYPE_NAMES,
     Chart,
     auto_title,
     chart_figure,
     chart_nodes,
+    series_colour,
     series_item,
     series_key,
     series_label,
@@ -379,10 +380,15 @@ def chart_card(
                     dcc.Dropdown(
                         id=field("type"),
                         # A Sankey and a Bus balance read `bus` differently, so system charts keep their type.
-                        options=[chart["type"]] if chart["kind"] == "system" else CHART_TYPES[chart["kind"]],
+                        options={
+                            chart_type: TYPE_NAMES[chart_type]
+                            for chart_type in (
+                                [chart["type"]] if chart["kind"] == "system" else CHART_TYPES[chart["kind"]]
+                            )
+                        },
                         value=chart["type"],
                         clearable=False,
-                        className="chart-select",
+                        className="chart-select chart-type",
                     ),
                     dcc.Dropdown(
                         id=field("width"),
@@ -423,13 +429,21 @@ def chart_card(
                     html.Label(
                         [
                             series_label(series_item(item)),
+                            # dcc.Input doesn't list type "color" but passes it to the native <input>; see `cli.main`.
                             dcc.Input(
                                 id={"type": "chart-colour", "chart": chart_id, "series": item},
-                                value=chart["colours"].get(item, ""),
-                                placeholder=PALETTE[index % len(PALETTE)],
-                                debounce=True,
+                                type="color",
+                                value=series_colour(index, series_item(item), chart["colours"]),
+                                debounce=0.5,  # dragging in the picker changes the value continuously
                                 className="chart-colour",
                             ),
+                            html.Button(
+                                "↺",
+                                id={"type": "chart-colour-reset", "chart": chart_id, "series": item},
+                                title="Reset to palette colour",
+                            )
+                            if item in chart["colours"]
+                            else None,
                         ]
                     )
                     for index, item in enumerate(picked)
@@ -470,7 +484,8 @@ def edited_chart(charts: list[Chart]) -> tuple[int, Chart]:
         Index of the chart in the store and the changed chart.
 
     Raises:
-        PreventUpdate: If no single control was changed by the user, the colour is invalid or nothing changed.
+        PreventUpdate: If no single control was changed by the user, a colour reset wasn't clicked, the colour is
+            invalid or nothing changed.
     """
     if not ctx.triggered or len(ctx.triggered) != 1:
         # A rendered card fires with all its inputs at once (at least title, type, width, series), a removed last
@@ -479,11 +494,18 @@ def edited_chart(charts: list[Chart]) -> tuple[int, Chart]:
     trigger, value = ctx.triggered_id, ctx.triggered[0]["value"]
     index = chart_index(charts, trigger["chart"])
     chart = dict(charts[index])
-    if trigger["type"] == "chart-colour":
-        if value and not HEX_COLOUR.fullmatch(value):
-            raise PreventUpdate
+    if trigger["type"] == "chart-colour-reset":
+        if not value:
+            raise PreventUpdate  # rendered with its card, not clicked
+        chart["colours"] = {item: colour for item, colour in chart["colours"].items() if item != trigger["series"]}
+    elif trigger["type"] == "chart-colour":
+        if not HEX_COLOUR.fullmatch(value or ""):
+            raise PreventUpdate  # the client can send anything
+        series = series_item(trigger["series"])
         colours = {item: colour for item, colour in chart["colours"].items() if item != trigger["series"]}
-        chart["colours"] = colours | ({trigger["series"]: value} if value else {})
+        # The palette colour is no override, e.g. as a re-rendered colour field shows it.
+        palette = series_colour(chart["series"].index(series), series, None) if series in chart["series"] else None
+        chart["colours"] = colours | ({trigger["series"]: value} if value != palette else {})
     elif trigger["field"] == "series":
         chart["series"] = [series_item(item) for item in value or []]
         chart["colours"] = {item: colour for item, colour in chart["colours"].items() if item in (value or [])}
@@ -554,6 +576,13 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                     className="center",
                     children=[
                         html.Div(
+                            className="pane-toggles",
+                            children=[
+                                html.Button("⇤", id="toggle-left-pane", title="Collapse or expand the left pane"),
+                                html.Button("⇥", id="toggle-inspector", title="Collapse or expand the inspector"),
+                            ],
+                        ),
+                        html.Div(
                             className="graph-pane",
                             children=[
                                 cyto.Cytoscape(
@@ -574,6 +603,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                         html.Div(id="charts", className="chart-grid"),
                         # Chart configs in grid order; the cards in "charts" follow it one to one.
                         dcc.Store(id="charts-store", data=[]),
+                        dcc.Store(id="added-chart"),  # id of the last added chart, scrolled into view
                     ],
                 ),
                 html.Div(id="inspector", className="pane"),
@@ -756,11 +786,40 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         prevent_initial_call=True,
     )
 
+    # A collapsed side pane gives the center its width; graph and charts re-measure on window resize.
+    app.clientside_callback(
+        """(_left, _right) => {
+            const pane = window.dash_clientside.callback_context.triggered_id === "toggle-left-pane" ? "left" : "right";
+            document.querySelector(".explorer").classList.toggle(`${pane}-collapsed`);
+            window.dispatchEvent(new Event("resize"));
+        }""",
+        Input("toggle-left-pane", "n_clicks"),
+        Input("toggle-inspector", "n_clicks"),
+        prevent_initial_call=True,
+    )
+
+    # A newly added card is scrolled into view and flashed; the server patch adding it may not be drawn yet.
+    app.clientside_callback(
+        """(chartId) => {
+            const flash = (tries) => {
+                const card = document.getElementById(JSON.stringify({chart: chartId, type: "chart-card"}));
+                if (!card) return tries && requestAnimationFrame(() => flash(tries - 1));
+                card.scrollIntoView({behavior: "smooth", block: "nearest"});
+                card.classList.add("flash");
+                setTimeout(() => card.classList.remove("flash"), 1000);
+            };
+            flash(10);
+        }""",
+        Input("added-chart", "data"),
+        prevent_initial_call=True,
+    )
+
     # Adding and arranging charts keep "charts-store" and the cards in "charts" in step by patching both at the same
     # index; an edit patches the store and its own card's components only.
     @app.callback(
         Output("charts-store", "data"),
         Output("charts", "children", allow_duplicate=True),
+        Output("added-chart", "data"),
         Input("add-chart", "n_clicks"),
         Input({"type": "outcome-chart", "outcome": ALL}, "n_clicks"),
         State("outcome-picker", "value"),
@@ -811,7 +870,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         charts, cards = Patch(), Patch()
         charts.extend(new)
         cards.extend(chart_cards(new, selection, name))
-        return charts, cards
+        return charts, cards, new[-1]["id"]
 
     @app.callback(
         Output("sankey-bus", "options"),
@@ -832,6 +891,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
     @app.callback(
         Output("charts-store", "data", allow_duplicate=True),
         Output("charts", "children", allow_duplicate=True),
+        Output("added-chart", "data", allow_duplicate=True),
         Input("add-sankey", "n_clicks"),
         Input("add-bus-balance", "n_clicks"),
         Input({"type": "bus-balance", "bus": ALL}, "n_clicks"),
@@ -861,23 +921,24 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             "title": None,
             "series": [],
             "colours": {},
-            "width": "half",
+            "width": "full",  # labels and legends need the room
             "bus": bus,
         }
         charts, cards = Patch(), Patch()
         charts.append(new)
         cards.extend(chart_cards([new], selection, name))
-        return charts, cards
+        return charts, cards, new["id"]
 
     # An edit changes the store and its own card only: re-rendering the chart grid would reset the page's scroll.
     @app.callback(
         Output("charts-store", "data", allow_duplicate=True),
         Input({"type": "chart-field", "field": ALL, "chart": ALL}, "value"),
         Input({"type": "chart-colour", "chart": ALL, "series": ALL}, "value"),
+        Input({"type": "chart-colour-reset", "chart": ALL, "series": ALL}, "n_clicks"),
         State("charts-store", "data"),
         prevent_initial_call=True,
     )
-    def edit_chart(_fields: list, _colours: list, charts: list[Chart]) -> Patch:
+    def edit_chart(_fields: list, _colours: list, _resets: list, charts: list[Chart]) -> Patch:
         index, chart = edited_chart(charts)
         patched_charts = Patch()
         patched_charts[index] = chart
@@ -892,6 +953,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         Output({"type": "chart-graph", "chart": MATCH}, "figure"),
         Input({"type": "chart-field", "field": ALL, "chart": MATCH}, "value"),
         Input({"type": "chart-colour", "chart": MATCH, "series": ALL}, "value"),
+        Input({"type": "chart-colour-reset", "chart": MATCH, "series": ALL}, "n_clicks"),
         # Before the edit: "edit_chart" fires on the same change. ponytail: a second edit sent before the first
         # one's store patch returns draws the card without the first; trigger on the store if that bites.
         State("charts-store", "data"),
@@ -900,7 +962,12 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         prevent_initial_call=True,
     )
     def update_card(
-        _fields: list, _colours: list, charts: list[Chart], selection: list[str] | None, name: str | None
+        _fields: list,
+        _colours: list,
+        _resets: list,
+        charts: list[Chart],
+        selection: list[str] | None,
+        name: str | None,
     ) -> tuple:
         _, chart = edited_chart(charts)
         (card,) = chart_cards([chart], selection, name)

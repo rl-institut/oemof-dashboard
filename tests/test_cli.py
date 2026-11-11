@@ -151,7 +151,7 @@ def test_main_serves_on_localhost_and_opens_browser(launched: tuple[MagicMock, M
 
     main([str(tmp_path), "--port", "9001"])
 
-    run.assert_called_once_with(host="127.0.0.1", port=9001, debug=False)
+    run.assert_called_once_with(host="127.0.0.1", port=9001, debug=False, dev_tools_props_check=False)
     open_browser.assert_called_once_with("http://127.0.0.1:9001/")
 
 
@@ -161,6 +161,7 @@ def test_main_debug_only_with_flag(launched: tuple[MagicMock, MagicMock], tmp_pa
     main([str(tmp_path), "--debug"])
 
     assert run.call_args.kwargs["debug"] is True
+    assert run.call_args.kwargs["dev_tools_props_check"] is False  # the colour input's type "color" isn't listed
 
 
 def test_main_opens_browser_once_under_debug_reloader(launched: tuple[MagicMock, MagicMock], tmp_path: Path) -> None:

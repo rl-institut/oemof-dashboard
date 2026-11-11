@@ -110,4 +110,6 @@ def main(argv: list[str] | None = None) -> None:
     if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
         # ponytail: fixed 1 s head start for the server, no readiness polling
         threading.Timer(1, webbrowser.open, [url]).start()
-    app.run(host="127.0.0.1", port=args.port, debug=args.debug)
+    # Debug mode's props check throws on the chart cards' colour inputs: dcc.Input doesn't list type "color", though
+    # it passes it to the native <input>.
+    app.run(host="127.0.0.1", port=args.port, debug=args.debug, dev_tools_props_check=False)

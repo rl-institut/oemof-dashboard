@@ -1,5 +1,6 @@
 """Pure figure builders: Outcomes × Result Selection → plotly figure plus notices. No Dash imports."""
 
+import math
 import re
 from collections.abc import Iterator
 from typing import Literal, NotRequired, TypedDict
@@ -20,14 +21,25 @@ HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{6}")  # form of a colour override
 # The Result is encoded by dash style; the first four stay distinguishable.
 DASHES = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"]
 MAX_DISTINCT_RESULTS = 4
+STACK_LINE_WIDTH = 0.5  # px; 8760 hourly points in a small card would hide the fills under thicker lines
 # Chart types per kind; a chart's kind is fixed at creation, its type switches within the kind.
 CHART_TYPES = {
     "sequences": ("line", "stacked_area", "duration_curve"),
     "scalars": ("bar",),
     "system": ("sankey", "bus_balance"),
 }
-SYSTEM_NAMES = {"sankey": "Sankey", "bus_balance": "Bus balance"}
+TYPE_NAMES = {
+    "line": "Line",
+    "stacked_area": "Stacked area",
+    "duration_curve": "Duration curve",
+    "bar": "Bar",
+    "sankey": "Sankey",
+    "bus_balance": "Bus balance",
+}
 MAX_TITLE_SERIES = 3
+# Time-series types hover all series at the hovered x at once; those over datetime show the hour too.
+TIME_SERIES_TYPES = {"line", "stacked_area", "duration_curve", "bus_balance"}
+DATE_TYPES = TIME_SERIES_TYPES - {"duration_curve"}
 # Browsers cap live WebGL contexts (~8–16); beyond that charts go blank.
 WEBGL_TYPES = {"line", "duration_curve"}
 MAX_WEBGL_CHARTS = 8
@@ -40,6 +52,14 @@ SANKEY_GAP = 0.02  # paper width between side-by-side Sankeys
 # A Bus balance draws its residual only beyond this share of its largest Flow value: solvers leave rounding noise.
 RESIDUAL_TOLERANCE = 1e-6
 RESIDUAL_COLOUR = "#1f1f1f"
+# Horizontal legend below the plot, clear of x tick labels and axis title, so the plot keeps the card's width.
+LEGEND = {"orientation": "h", "y": -0.15, "traceorder": "normal"}  # not reversed for stacks
+# A Bus balance grows from its base height by one legend row per LEGEND_ENTRIES_PER_ROW entries, so a long legend
+# doesn't squeeze its plot.
+BUS_BALANCE_HEIGHT = 400  # px
+LEGEND_ROW_HEIGHT = 20  # px
+# ponytail: guessed for a full-width card; measure label widths if rows come out wrong.
+LEGEND_ENTRIES_PER_ROW = 4
 
 
 class Chart(TypedDict):
@@ -114,7 +134,7 @@ def auto_title(chart: Chart) -> str:
         "Sankey" or "Sankey · <Bus>" for a Sankey, "Bus balance · <Bus>" for a Bus balance.
     """
     if chart["kind"] == "system":
-        return " · ".join(filter(None, (SYSTEM_NAMES[chart["type"]], chart.get("bus"))))
+        return " · ".join(filter(None, (TYPE_NAMES[chart["type"]], chart.get("bus"))))
     series = chart["series"]
     if not series:
         return "Empty chart"
@@ -138,7 +158,9 @@ def chart_figure(
         package: Selected Datapackage, needed by system charts; None if none is selected.
 
     Returns:
-        Figure titled with the chart's title, or the auto title if unset. Notices to show with it.
+        Untitled figure (the card shows the title) with its legend horizontal below the plot; time series hover
+        all series at the hovered x with full names, values to two decimals and datetimes to the hour. Notices to
+        show with it.
 
     Raises:
         ValueError: If the chart's type doesn't belong to its kind.
@@ -147,7 +169,7 @@ def chart_figure(
         raise ValueError(f"Chart type {chart['type']!r} isn't of kind {chart['kind']!r}")
     series = [tuple(item) for item in chart["series"]]
     if chart["kind"] == "system" and not package:
-        figure, notices = go.Figure(), [f"{SYSTEM_NAMES[chart['type']]} needs a selected Datapackage."]
+        figure, notices = go.Figure(), [f"{TYPE_NAMES[chart['type']]} needs a selected Datapackage."]
     elif chart["type"] == "sankey":
         figure, notices = sankey(results, package, chart.get("bus"))
     elif chart["type"] == "bus_balance":
@@ -157,7 +179,12 @@ def chart_figure(
     else:
         builder = {"line": line_chart, "stacked_area": stacked_area, "duration_curve": duration_curve}[chart["type"]]
         figure, notices = builder(series, results, chart["colours"], inputs)
-    figure.update_layout(title_text=chart["title"] or auto_title(chart), margin_t=30)
+    figure.update_layout(margin_t=30, legend=LEGEND)  # no figure title: the card's title field shows it
+    if chart["type"] in TIME_SERIES_TYPES:
+        figure.update_layout(hovermode="x unified", hoverlabel_namelength=-1)  # full series names
+        figure.update_yaxes(hoverformat=",.2f")
+    if chart["type"] in DATE_TYPES:
+        figure.update_xaxes(hoverformat="%Y-%m-%d %H:%M")
     return figure, notices
 
 
@@ -183,7 +210,17 @@ def chart_nodes(chart: Chart, results: dict[str, Result], package: Datapackage |
     return list(dict.fromkeys(name for pair in pairs for name in pair if name is not None))
 
 
-def _colour(index: int, item: tuple[str, ...], colours: dict[str, str] | None) -> str:
+def series_colour(index: int, item: list[str] | tuple[str, ...], colours: dict[str, str] | None) -> str:
+    """Colour of a chart's series: its override, else the palette colour of its position.
+
+    Args:
+        index: Position of the series in the chart.
+        item: Series item.
+        colours: Hex colours by series key, overriding the palette.
+
+    Returns:
+        Hex colour.
+    """
     # ponytail: palette wraps after 8 series; a colour override is the way out
     return (colours or {}).get(series_key(item), PALETTE[index % len(PALETTE)])
 
@@ -197,7 +234,7 @@ def _traces(
     # (colour, Result index, trace name, data or None if missing) per Outcome × Result and once per Input Sequence
     # (Result index None), in series order.
     for index, item in enumerate(series):
-        colour = _colour(index, item, colours)
+        colour = series_colour(index, item, colours)
         if len(item) == 3:
             yield colour, None, series_label(item), (inputs or {}).get(item)
             continue
@@ -300,27 +337,46 @@ def stacked_area(
         inputs: Loaded Input Sequences by (Datapackage, resource, column).
 
     Returns:
-        Figure with one stacked `Scatter` trace per Outcome × Result; subplots share both axes and are titled
-        with the Result. Input Sequences are drawn unstacked over every subplot with one legend entry. A missing
-        series is a legend entry suffixed "(missing)". No notices.
+        Figure with one thin-lined, stacked `Scatter` trace per Outcome × Result; per Result, series all zero
+        there are stacked at the bottom, the others keep series order, as does the legend. Subplots share both
+        axes and are titled with the Result. Input Sequences are drawn unstacked over every subplot with one legend
+        entry. A missing series is a legend entry suffixed "(missing)". No notices.
     """
     rows = max(len(results), 1)
     figure = make_subplots(rows=rows, cols=1, shared_xaxes=True, subplot_titles=list(results))
     figure.update_yaxes(matches="y")
     figure.update_layout(margin={"l": 40, "r": 10, "t": 10, "b": 30})
-    for colour, result_index, name, column in _traces(series, results, colours, inputs):
-        line = {"color": colour} | _input_shape(result_index)
+    traces = list(_traces(series, results, colours, inputs))
+    # Stable sort: all-zero series go to the bottom of their Result's stack, so their fill can't cover the others;
+    # the legend keeps series order through `legendrank`.
+    ranked = sorted(enumerate(traces), key=lambda ranked_trace: not _all_zero(ranked_trace[1][-1]))
+    for rank, (colour, result_index, name, column) in ranked:
+        line = {"color": colour, "width": STACK_LINE_WIDTH} | _input_shape(result_index)
         if column is None:
-            trace = go.Scatter(x=[None], y=[None], name=f"{name} (missing)", mode="lines", line=line, showlegend=True)
+            trace = go.Scatter(
+                x=[None], y=[None], name=f"{name} (missing)", mode="lines", line=line, showlegend=True, legendrank=rank
+            )
             figure.add_trace(trace, row=(result_index or 0) + 1, col=1)
             continue
-        data = {"x": column.index, "y": column.to_numpy(), "name": name, "mode": "lines", "line": line}
+        data = {
+            "x": column.index,
+            "y": column.to_numpy(),
+            "name": name,
+            "mode": "lines",
+            "line": line,
+            "legendrank": rank,
+        }
         if result_index is None:  # Input Sequence: unstacked over every subplot, one legend entry
             for row in range(1, rows + 1):
                 figure.add_trace(go.Scatter(**data, legendgroup=name, showlegend=row == 1), row=row, col=1)
         else:
             figure.add_trace(go.Scatter(**data, stackgroup=str(result_index + 1)), row=result_index + 1, col=1)
     return figure, []
+
+
+def _all_zero(column: pd.Series | None) -> bool:
+    # NaN, e.g. the trailing row, counts as zero.
+    return column is not None and bool((column.fillna(0) == 0).all())
 
 
 def bar_chart(
@@ -351,7 +407,7 @@ def bar_chart(
     figure = go.Figure(layout=layout)
     for index, item in enumerate(series):
         label = series_label(item)
-        colour = _colour(index, item, colours)
+        colour = series_colour(index, item, colours)
         if len(item) == 3:
             style = {"marker": {"color": colour, "pattern": {"shape": "/"}}, "legendgroup": label}
             value = (inputs or {}).get(item)
@@ -454,7 +510,8 @@ def bus_balance(results: dict[str, Result], package: Datapackage, bus: str) -> t
         from it (negative, stacked below), labelled with the other node, also if the Flow isn't in the Datapackage.
         Flows are coloured and stacked by Σ flow over the Result Selection, descending, alike in every subplot;
         subplots share both axes and are titled with the Result. A dotted residual Σin − Σout is drawn where its
-        max |value| exceeds `RESIDUAL_TOLERANCE` × the largest Flow value of that Result. Notices list a Bus not in the Datapackage
+        max |value| exceeds `RESIDUAL_TOLERANCE` × the largest Flow value of that Result. The figure grows taller
+        with its legend entries. Notices list a Bus not in the Datapackage
         (no traces then) and, per Result, Flows without `flow`, unmatched Result Entries and a Bus without Flows.
     """
     figure = make_subplots(rows=max(len(results), 1), cols=1, shared_xaxes=True, subplot_titles=list(results))
@@ -511,6 +568,7 @@ def bus_balance(results: dict[str, Result], package: Datapackage, bus: str) -> t
                 col=1,
             )
             shown.add("residual")
+    figure.update_layout(height=BUS_BALANCE_HEIGHT + LEGEND_ROW_HEIGHT * math.ceil(len(shown) / LEGEND_ENTRIES_PER_ROW))
     return figure, notices
 
 
