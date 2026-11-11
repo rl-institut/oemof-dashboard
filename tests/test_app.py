@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from conftest import package_of, result_of
-from dash import Dash
+from dash import Dash, html
 from plotly.utils import PlotlyJSONEncoder
 
 from oemof_dashboard import datapackage
@@ -671,7 +671,8 @@ def test_inspector_lists_outcomes_per_entry_and_variable_with_add_chart(two_resu
 
     assert "pv-el · flow" in text
     assert "pv-el · invest" in text
-    assert "in 1/2 Results" in text
+    outcomes = inspector(package, "pv", results, "dp")[-2]
+    assert {len(row.children) for row in outcomes.children} == {2}  # name and "+ chart", no "in n/m Results"
     assert json.dumps({"type": "outcome-chart", "outcome": "pv-el/flow"}) in text
     assert json.dumps({"type": "outcome-chart", "outcome": "pv-el/invest"}) in text
 
@@ -683,6 +684,44 @@ def test_inspector_shows_results_without_outcomes_for_node(two_results: tuple) -
 
     assert "r1: no Outcomes in this Result" in text
     assert "r2: no Outcomes" not in text
+
+
+def test_inspector_shows_dash_for_empty_sections(two_results: tuple) -> None:
+    package, _ = two_results
+
+    children = inspector(package, "pv", {}, "dp")
+
+    labels = [index for index, child in enumerate(children) if isinstance(child, html.Label)]
+    sections = {children[index].children: children[index + 1] for index in labels}
+    assert sections["Parameters"] == "–"
+    assert sections["Input Sequences"] == "–"
+
+
+@pytest.mark.parametrize(
+    ("value", "shown", "tooltip"),
+    [
+        (123456.789, "123500", "123456.789"),
+        (0.123456, "0.1235", "0.123456"),
+        (1.0, "1", "1.0"),
+        (1e-10, "1e-10", "1e-10"),
+        (1e300, "1e+300", "1e+300"),
+        ("{}", "–", None),
+        ("text", "text", None),
+    ],
+)
+def test_inspector_rounds_numeric_parameters_with_full_value_as_tooltip(
+    two_results: tuple, value: float | str, shown: str, tooltip: str | None
+) -> None:
+    package, _ = two_results
+    package.components["pv"].parameters["capacity"] = value
+
+    children = inspector(package, "pv", {}, "dp")
+
+    table = children[[getattr(child, "children", None) for child in children].index("Parameters") + 1]
+    (row,) = table.children
+    cell = row.children[1]
+    assert cell.children == shown
+    assert getattr(cell, "title", None) == tooltip
 
 
 def inspect_inputs(datapackage_name: str | None, selected: str | None = None) -> dict[str, object]:
@@ -721,7 +760,6 @@ def test_tapping_node_shows_its_outcomes(adlershof_app: Dash) -> None:
     text = rendered(fire(adlershof_app, inputs, changed=["graph.selectedNodeData"])["inspector"]["children"])
 
     assert "bhkw-electricity · flow" in text
-    assert "in 1/1 Results" in text
 
 
 @pytest.mark.parametrize(
@@ -754,6 +792,27 @@ def test_selected_graph_node_prefilters_outcome_picker(
 
     assert {"bhkw-electricity/flow", "gas-bhkw/flow"} <= set(values)
     assert ("wind-electricity/flow" in values) is wind_listed
+
+
+@pytest.mark.parametrize(
+    ("selected", "chip"), [([{"id": "wind"}], "Only wind"), ([], None), (None, None), ([{"id": "gone"}], None)]
+)
+def test_filter_chip_names_selected_node_above_outcome_picker(
+    adlershof_app: Dash, selected: list | None, chip: str | None
+) -> None:
+    inputs = {"graph.selectedNodeData": selected, "datapackage.value": "adlershof"}
+
+    response = fire(adlershof_app, inputs)
+
+    assert response["outcome-filter"]["hidden"] is (chip is None)
+    assert chip is None or response["outcome-filter-node"]["children"] == chip
+
+
+def test_filter_chip_has_clear_button_and_starts_hidden(adlershof_app: Dash) -> None:
+    components = components_by_id(adlershof_app)
+
+    assert components["outcome-filter"]["hidden"] is True
+    assert components["outcome-filter-clear"]["children"] == "×"
 
 
 def test_add_chart_button_in_inspector_adds_line_chart(page: Page) -> None:
