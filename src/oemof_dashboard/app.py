@@ -8,7 +8,7 @@ from pathlib import Path
 
 import dash_cytoscape as cyto
 import pandas as pd
-from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
+from dash import ALL, MATCH, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
 from oemof_dashboard import datapackage
@@ -340,7 +340,11 @@ def chart_card(
     def action(name: str, label: str) -> html.Button:
         return html.Button(label, id={"type": "chart-action", "action": name, "chart": chart_id}, title=name)
 
+    def part(name: str) -> dict:
+        return {"type": name, "chart": chart_id}
+
     return html.Div(
+        id=part("chart-card"),
         className=f"chart-card {chart['width']}",
         children=[
             html.Div(
@@ -374,10 +378,11 @@ def chart_card(
                 ],
             ),
             html.Div(
-                [
+                id=part("chart-chips"),
+                children=[
                     html.Button(node, id={"type": "chart-chip", "chart": chart_id, "node": node}, className="node-link")
                     for node in chart_nodes(chart, results, package)
-                ]
+                ],
             ),
             *(
                 [
@@ -390,30 +395,29 @@ def chart_card(
                     )
                 ]
                 if chart["kind"] == "system"
-                else [
-                    dcc.Dropdown(id=field("series"), options=options, value=picked, multi=True),
-                    html.Div(
-                        className="chart-colours",
-                        children=[
-                            html.Label(
-                                [
-                                    series_label(series_item(item)),
-                                    dcc.Input(
-                                        id={"type": "chart-colour", "chart": chart_id, "series": item},
-                                        value=chart["colours"].get(item, ""),
-                                        placeholder=PALETTE[index % len(PALETTE)],
-                                        debounce=True,
-                                        className="chart-colour",
-                                    ),
-                                ]
-                            )
-                            for index, item in enumerate(picked)
-                        ],
-                    ),
-                ]
+                else [dcc.Dropdown(id=field("series"), options=options, value=picked, multi=True)]
             ),
-            *(html.Div(notice, className="notice") for notice in notices),
-            dcc.Graph(figure=figure),
+            html.Div(  # also on system charts, empty, so the card update always has its target
+                id=part("chart-colours"),
+                className="chart-colours",
+                children=[
+                    html.Label(
+                        [
+                            series_label(series_item(item)),
+                            dcc.Input(
+                                id={"type": "chart-colour", "chart": chart_id, "series": item},
+                                value=chart["colours"].get(item, ""),
+                                placeholder=PALETTE[index % len(PALETTE)],
+                                debounce=True,
+                                className="chart-colour",
+                            ),
+                        ]
+                    )
+                    for index, item in enumerate(picked)
+                ],
+            ),
+            html.Div(id=part("chart-notices"), children=[html.Div(notice, className="notice") for notice in notices]),
+            dcc.Graph(id=part("chart-graph"), figure=figure),
         ],
     )
 
@@ -435,6 +439,42 @@ def chart_index(charts: list[Chart], chart_id: str) -> int:
         if chart["id"] == chart_id:
             return index
     raise PreventUpdate
+
+
+def edited_chart(charts: list[Chart]) -> tuple[int, Chart]:
+    """Apply the card control change that triggered the running callback (read from `ctx`) to its chart.
+
+    Args:
+        charts: Charts store content before the change.
+
+    Returns:
+        Index of the chart in the store and the changed chart.
+
+    Raises:
+        PreventUpdate: If no single control was changed by the user, the colour is invalid or nothing changed.
+    """
+    if not ctx.triggered or len(ctx.triggered) != 1:
+        # A rendered card fires with all its inputs at once (at least title, type, width, series), a removed last
+        # card with none; a user edit changes one.
+        raise PreventUpdate
+    trigger, value = ctx.triggered_id, ctx.triggered[0]["value"]
+    index = chart_index(charts, trigger["chart"])
+    chart = dict(charts[index])
+    if trigger["type"] == "chart-colour":
+        if value and not HEX_COLOUR.fullmatch(value):
+            raise PreventUpdate
+        colours = {item: colour for item, colour in chart["colours"].items() if item != trigger["series"]}
+        chart["colours"] = colours | ({trigger["series"]: value} if value else {})
+    elif trigger["field"] == "series":
+        chart["series"] = [series_item(item) for item in value or []]
+        chart["colours"] = {item: colour for item, colour in chart["colours"].items() if item in (value or [])}
+    elif trigger["field"] == "title":
+        chart["title"] = (value or "").strip() or None
+    else:
+        chart[trigger["field"]] = value  # type, width or Bus, offered by the card's dropdowns
+    if chart == charts[index]:
+        raise PreventUpdate  # e.g. re-rendered colour fields: no store write, and no card update loop
+    return index, chart
 
 
 def create_app(datapackages: Path, results: Path) -> Dash:
@@ -553,12 +593,14 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             for chart in charts
         ]
 
-    def selected_node_names(name: str | None, selected_nodes: list[dict] | None) -> set[str]:
+    def selected_node(name: str | None, selected_nodes: list[dict] | None) -> str | None:
         # Cytoscape may keep a selection from the previous Datapackage; drop names it doesn't have.
+        # ponytail: a box selection counts as its alphabetically first node.
         package = read_package(name)
         if not package or not selected_nodes:
-            return set()
-        return {node["id"] for node in selected_nodes} & (package.buses.keys() | package.components.keys())
+            return None
+        known = {node["id"] for node in selected_nodes} & (package.buses.keys() | package.components.keys())
+        return min(known, default=None)
 
     @app.callback(Output("graph", "elements"), Input("datapackage", "value"), Input("result-selection", "value"))
     def draw_graph(name: str | None, selection: list[str] | None) -> list[dict]:
@@ -580,7 +622,8 @@ def create_app(datapackages: Path, results: Path) -> Dash:
     ) -> list[dict[str, str]]:
         selected = read_selection(selection)
         outcomes = set().union(*map(sequence_outcomes, selected.values()), *map(scalar_outcomes, selected.values()))
-        nodes = selected_node_names(name, selected_nodes)
+        node = selected_node(name, selected_nodes)
+        nodes = {node} if node else set()
         package = read_package(name)
         inputs = (
             (input_sequence_items(name, package, nodes or None) | input_scalar_items(name, package, nodes or None))
@@ -594,35 +637,20 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             {"label": series_label(item), "value": series_key(item)} for item in [*sorted(outcomes), *sorted(inputs)]
         ]
 
+    # The graph's node selection is the one selection state (node or none, see `selected_node`): a tap, a node
+    # link or a chart chip selects a node, tapping empty space deselects it; the inspector, like the Outcome
+    # picker, follows it. Server callbacks can't write "selectedNodeData", so every (de)select path is clientside.
     @app.callback(
         Output("inspector", "children"),
-        Input("graph", "tapNode"),  # not tapNodeData: that doesn't change when the same node is tapped again
-        Input({"type": "node-link", "node": ALL}, "n_clicks"),
-        Input({"type": "chart-chip", "chart": ALL, "node": ALL}, "n_clicks"),
+        Input("graph", "selectedNodeData"),
         Input("datapackage", "value"),
         Input("result-selection", "value"),
-        State("graph", "selectedNodeData"),
     )
-    def inspect(
-        tapped: dict | None,
-        _clicks: list[int | None],
-        _chip_clicks: list[int | None],
-        name: str | None,
-        selection: list[str] | None,
-        selected_nodes: list[dict] | None,
-    ) -> list:
-        link_clicked = isinstance(ctx.triggered_id, dict)
-        if link_clicked and not ctx.triggered[0]["value"]:
-            raise PreventUpdate  # new links or chips rendered, not clicked
+    def inspect(selected_nodes: list[dict] | None, name: str | None, selection: list[str] | None) -> list:
         package = read_package(name)
         selected = read_selection(selection)
-        if package and link_clicked:
-            return inspector(package, ctx.triggered_id["node"], selected, name)
-        if package and ctx.triggered_id == "graph":
-            return inspector(package, tapped["data"]["id"], selected, name)
-        kept = selected_node_names(name, selected_nodes)
-        if kept and ctx.triggered_id == "result-selection":
-            return inspector(package, min(kept), selected, name)
+        if node := selected_node(name, selected_nodes):
+            return inspector(package, node, selected, name)
         # Nothing selected: summarise the inputs.
         summary = refusal_banners(name, selection)
         summary += warning_list(f"Datapackage {name}", package.warnings) if package else []
@@ -656,23 +684,32 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             )
         return summary
 
-    # A clicked node link or chart chip also selects its node in the graph, which updates "selectedNodeData".
+    # Re-rendered inspector content starts at its top, e.g. the name of a newly selected node.
+    app.clientside_callback(
+        """() => { document.getElementById("inspector").scrollTop = 0; }""",
+        Input("inspector", "children"),
+        prevent_initial_call=True,
+    )
+
+    # A clicked node link or chart chip selects its node in the graph, which updates "selectedNodeData".
     # Selecting via `elements` instead would miss a node re-selected after a tap: elements only patch on change.
     app.clientside_callback(
         """(_links, _chips) => {
             const context = window.dash_clientside.callback_context;
             const cy = document.getElementById("graph")?._cyreg?.cy;
             if (!cy || !context.triggered[0]?.value) return;  // new links or chips rendered, not clicked
+            const node = cy.getElementById(context.triggered_id.node);
+            if (node.empty()) return;  // not in the graph: keep the selection
             cy.$(":selected").unselect();
-            cy.getElementById(context.triggered_id.node).select();
+            node.select();
         }""",
         Input({"type": "node-link", "node": ALL}, "n_clicks"),
         Input({"type": "chart-chip", "chart": ALL, "node": ALL}, "n_clicks"),
         prevent_initial_call=True,
     )
 
-    # Chart callbacks keep "charts-store" and the cards in "charts" in step by patching both at the same index,
-    # so editing one chart re-renders only its card.
+    # Adding and arranging charts keep "charts-store" and the cards in "charts" in step by patching both at the same
+    # index; an edit patches the store and its own card's components only.
     @app.callback(
         Output("charts-store", "data"),
         Output("charts", "children", allow_duplicate=True),
@@ -692,9 +729,9 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         selection: list[str] | None,
         name: str | None,
     ) -> tuple:
+        if not ctx.triggered[0]["value"]:
+            raise PreventUpdate  # "+ chart" buttons rendered or removed, not clicked
         if isinstance(ctx.triggered_id, dict):
-            if not ctx.triggered[0]["value"]:
-                raise PreventUpdate  # new "+ chart" buttons rendered, not clicked
             picked = [ctx.triggered_id["outcome"]]
         if not picked:
             raise PreventUpdate
@@ -765,9 +802,9 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         selection: list[str] | None,
         name: str | None,
     ) -> tuple:
+        if not ctx.triggered[0]["value"]:
+            raise PreventUpdate  # "Add Bus balance" button rendered or removed, not clicked
         if isinstance(ctx.triggered_id, dict):
-            if not ctx.triggered[0]["value"]:
-                raise PreventUpdate  # new "Add Bus balance" button rendered, not clicked
             bus = ctx.triggered_id["bus"]
         new: Chart = {
             "id": uuid.uuid4().hex,
@@ -784,42 +821,50 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         cards.extend(chart_cards([new], selection, name))
         return charts, cards
 
+    # An edit changes the store and its own card only: re-rendering the chart grid would reset the page's scroll.
     @app.callback(
         Output("charts-store", "data", allow_duplicate=True),
-        Output("charts", "children", allow_duplicate=True),
         Input({"type": "chart-field", "field": ALL, "chart": ALL}, "value"),
         Input({"type": "chart-colour", "chart": ALL, "series": ALL}, "value"),
+        State("charts-store", "data"),
+        prevent_initial_call=True,
+    )
+    def edit_chart(_fields: list, _colours: list, charts: list[Chart]) -> Patch:
+        index, chart = edited_chart(charts)
+        patched_charts = Patch()
+        patched_charts[index] = chart
+        return patched_charts
+
+    @app.callback(
+        Output({"type": "chart-card", "chart": MATCH}, "className"),
+        Output({"type": "chart-field", "field": "title", "chart": MATCH}, "placeholder"),
+        Output({"type": "chart-chips", "chart": MATCH}, "children"),
+        Output({"type": "chart-colours", "chart": MATCH}, "children"),
+        Output({"type": "chart-notices", "chart": MATCH}, "children"),
+        Output({"type": "chart-graph", "chart": MATCH}, "figure"),
+        Input({"type": "chart-field", "field": ALL, "chart": MATCH}, "value"),
+        Input({"type": "chart-colour", "chart": MATCH, "series": ALL}, "value"),
+        # Before the edit: "edit_chart" fires on the same change. ponytail: a second edit sent before the first
+        # one's store patch returns draws the card without the first; trigger on the store if that bites.
         State("charts-store", "data"),
         State("result-selection", "value"),
         State("datapackage", "value"),
         prevent_initial_call=True,
     )
-    def edit_chart(
+    def update_card(
         _fields: list, _colours: list, charts: list[Chart], selection: list[str] | None, name: str | None
     ) -> tuple:
-        if len(ctx.triggered) != 1:
-            # A rendered card fires with all its inputs at once (at least title, type, width, series); a user
-            # edit changes one.
-            raise PreventUpdate
-        trigger, value = ctx.triggered_id, ctx.triggered[0]["value"]
-        index = chart_index(charts, trigger["chart"])
-        chart = charts[index]
-        if trigger["type"] == "chart-colour":
-            if value and not HEX_COLOUR.fullmatch(value):
-                raise PreventUpdate
-            colours = {item: colour for item, colour in chart["colours"].items() if item != trigger["series"]}
-            chart["colours"] = colours | ({trigger["series"]: value} if value else {})
-        elif trigger["field"] == "series":
-            chart["series"] = [series_item(item) for item in value or []]
-            chart["colours"] = {item: colour for item, colour in chart["colours"].items() if item in (value or [])}
-        elif trigger["field"] == "title":
-            chart["title"] = (value or "").strip() or None
-        else:
-            chart[trigger["field"]] = value  # type, width or Bus, offered by the card's dropdowns
-        patched_charts, cards = Patch(), Patch()
-        patched_charts[index] = chart
-        (cards[index],) = chart_cards([chart], selection, name)
-        return patched_charts, cards
+        _, chart = edited_chart(charts)
+        (card,) = chart_cards([chart], selection, name)
+        chart_id = chart["id"]
+        return (
+            card.className,
+            card[{"type": "chart-field", "field": "title", "chart": chart_id}].placeholder,
+            card[{"type": "chart-chips", "chart": chart_id}].children,
+            card[{"type": "chart-colours", "chart": chart_id}].children,
+            card[{"type": "chart-notices", "chart": chart_id}].children,
+            card[{"type": "chart-graph", "chart": chart_id}].figure,
+        )
 
     @app.callback(
         Output("charts-store", "data", allow_duplicate=True),

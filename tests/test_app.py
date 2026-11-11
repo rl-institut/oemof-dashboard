@@ -133,7 +133,7 @@ def test_inspector_summary_lists_input_warnings_per_input(faulty_inputs: Path) -
     app = create_app(faulty_inputs / "datapackages", faulty_inputs / "results")
 
     inputs = inspect_inputs("warned") | {"result-selection.value": ["partial"]}
-    text = rendered(fire(app, inputs, NO_SELECTED_NODE, changed=["result-selection.value"])["inspector"]["children"])
+    text = rendered(fire(app, inputs, changed=["result-selection.value"])["inspector"]["children"])
 
     assert "Datapackage warned: 2 Input Warnings" in text
     assert "bus line 3: pv has no type, kept as unknown" in text
@@ -146,7 +146,7 @@ def test_selected_refused_input_shows_banner(faulty_inputs: Path) -> None:
     app = create_app(faulty_inputs / "datapackages", faulty_inputs / "results")
 
     inputs = inspect_inputs("broken") | {"result-selection.value": ["empty", "partial"]}
-    children = fire(app, inputs, NO_SELECTED_NODE, changed=["datapackage.value"])["inspector"]["children"]
+    children = fire(app, inputs, changed=["datapackage.value"])["inspector"]["children"]
 
     assert "Datapackage broken refused: datapackage.json missing or invalid" in rendered(children[0])
     assert "Result empty refused: no usable Result file" in rendered(children[1])
@@ -185,6 +185,7 @@ def fire(
 
     A key without "." names a pattern-matching input by its `type` and passes its value through raw, i.e. the
     list of matched `{"id", "property", "value"}` entries. `changed` names the triggering inputs; default all.
+    An empty `changed` is what the browser sends when the last component matching a pattern-matching input is gone.
     Returns output props by id, or {} when the callback prevents the update.
     """
 
@@ -195,22 +196,45 @@ def fire(
         ]
 
     states = states or {}
+    changed = list(inputs) if changed is None else changed
     key = next(
         key
         for key, callback in app.callback_map.items()
         if [input_name(spec) for spec in callback["inputs"] + callback["state"]] == [*inputs, *states]
     )
-    outputs = [{"id": output.split(".")[0], "property": output.split(".")[1]} for output in key.strip(".").split("...")]
+    outputs = [
+        {"id": concrete(output.rsplit(".", 1)[0], changed), "property": output.rsplit(".", 1)[1]}
+        for output in key.strip(".").split("...")
+    ]
     payload = {
         "output": key,
         "outputs": outputs if key.startswith("..") else outputs[0],
         "inputs": props(inputs),
         "state": props(states),
-        "changedPropIds": changed or list(inputs),
+        "changedPropIds": changed,
     }
     response = app.server.test_client().post("/_dash-update-component", json=payload)
     assert response.status_code in (200, 204), response.get_data(as_text=True)
     return response.get_json()["response"] if response.status_code == 200 else {}
+
+
+def concrete(output_id: str, changed: list[str]) -> str | dict:
+    """Output id as the browser sends it: a MATCH wildcard takes its value from the triggering input."""
+    if not output_id.startswith("{"):
+        return output_id
+    trigger = json.loads(changed[0].rsplit(".", 1)[0])
+    return {key: trigger[key] if value == ["MATCH"] else value for key, value in json.loads(output_id).items()}
+
+
+def set_props(tree: object, component_id: dict, props: dict) -> None:
+    """Update the props of the component with this id in a rendered component tree, as the browser does."""
+    if isinstance(tree, list):
+        for item in tree:
+            set_props(item, component_id, props)
+    elif isinstance(tree, dict) and "props" in tree:
+        if tree["props"].get("id") == component_id:
+            tree["props"].update(props)
+        set_props(tree["props"].get("children"), component_id, props)
 
 
 def patched(value: list, update: object) -> list:
@@ -236,7 +260,6 @@ def test_inspector_summary_lists_result_entries_without_datapackage(adlershof_ap
     inspector = fire(
         adlershof_app,
         inspect_inputs(None) | {"result-selection.value": ["adlershof"]},
-        {"graph.selectedNodeData": None},
         changed=["result-selection.value"],
     )["inspector"]
 
@@ -258,10 +281,14 @@ class Page:
         self.datapackage: str | None = "adlershof"
 
     def apply(self, response: dict) -> None:
-        """Apply a callback response to the charts store and cards, unless the update was prevented."""
-        if response:
-            self.charts = patched(self.charts, response["charts-store"]["data"])
-            self.cards = patched(self.cards, response["charts"]["children"])
+        """Apply a callback response to the charts store, the cards and props of single cards' components."""
+        for output, props in response.items():
+            if output == "charts-store":
+                self.charts = patched(self.charts, props["data"])
+            elif output == "charts":
+                self.cards = patched(self.cards, props["children"])
+            elif output.startswith("{"):
+                set_props(self.cards, json.loads(output), props)
 
     def states(self) -> dict[str, object]:
         """States the chart callbacks read: the charts store, a Result Selection of adlershof and the Datapackage."""
@@ -277,7 +304,7 @@ class Page:
         self.cards = fire(self.app, inputs, {"charts-store.data": self.charts})["charts"]["children"]
 
     def trigger(self, inputs: dict[str, list], component_id: dict, prop: str, value: object) -> None:
-        """Change one prop of one card control, passing the other pattern-matching inputs of the callback empty."""
+        """Click one card button, passing the other pattern-matching inputs of the callback empty."""
         inputs[component_id["type"]] = [{"id": component_id, "property": prop, "value": value}]
         self.apply(fire(self.app, inputs, self.states(), changed=[f"{pattern(component_id)}.{prop}"]))
 
@@ -308,15 +335,29 @@ class Page:
         """Pick a Bus filter, or none for the whole system, and click "Add Sankey"."""
         self.add_system("add-sankey", bus)
 
-    def edit(self, field: str, chart: int, value: object) -> None:
-        """Set a card's title, type, width, series or Bus control."""
-        component_id = {"type": "chart-field", "field": field, "chart": self.charts[chart]["id"]}
-        self.trigger({"chart-field": [], "chart-colour": []}, component_id, "value", value)
+    def change(self, component_id: dict, value: object) -> set[str]:
+        """Change the value of one card control: both edit callbacks (store and card) fire on the same state.
 
-    def colour(self, chart: int, series: str, value: str) -> None:
-        """Type a colour override for one series of a card."""
-        component_id = {"type": "chart-colour", "chart": self.charts[chart]["id"], "series": series}
-        self.trigger({"chart-field": [], "chart-colour": []}, component_id, "value", value)
+        Returns the ids of the updated outputs."""
+        set_props(self.cards, component_id, {"value": value})
+        inputs: dict[str, object] = {"chart-field": [], "chart-colour": []}
+        inputs[component_id["type"]] = [{"id": component_id, "property": "value", "value": value}]
+        changed = [f"{pattern(component_id)}.value"]
+        responses = [
+            fire(self.app, inputs, {"charts-store.data": self.charts}, changed),
+            fire(self.app, inputs, self.states(), changed),
+        ]
+        for response in responses:
+            self.apply(response)
+        return {output for response in responses for output in response}
+
+    def edit(self, field: str, chart: int, value: object) -> set[str]:
+        """Set a card's title, type, width, series or Bus control; return the ids of the updated outputs."""
+        return self.change({"type": "chart-field", "field": field, "chart": self.charts[chart]["id"]}, value)
+
+    def colour(self, chart: int, series: str, value: str) -> set[str]:
+        """Type a colour override for one series of a card; return the ids of the updated outputs."""
+        return self.change({"type": "chart-colour", "chart": self.charts[chart]["id"], "series": series}, value)
 
     def click(self, action: str, chart: int) -> None:
         """Click a card's up, down or remove button."""
@@ -373,6 +414,23 @@ def test_editing_title_width_and_series_updates_chart_and_card(page: Page) -> No
     assert "CHP output" in card
     assert "battery_large-None · storage_content · adlershof" in card
     assert "chart-card full" in card
+
+
+def test_editing_a_card_updates_only_that_card(page: Page) -> None:
+    page.add("bhkw-electricity/flow")
+    page.add("wind-electricity/flow")
+    other = json.dumps(page.cards[1])
+
+    updated = page.edit("width", 0, "full") | page.edit(
+        "series", 0, ["bhkw-electricity/flow", "battery_large-None/storage_content"]
+    )
+
+    assert "charts" not in updated  # the chart grid isn't re-rendered
+    card = json.dumps(page.cards[0], ensure_ascii=False)
+    assert "chart-card full" in card
+    assert "battery_large-None · storage_content · adlershof" in card  # figure
+    assert '"placeholder": "bhkw-electricity · flow, battery_large-None · storage_content"' in card
+    assert json.dumps(page.cards[1]) == other
 
 
 @pytest.mark.parametrize("cleared", ["", "   "])
@@ -439,6 +497,16 @@ def test_charts_move_up_and_down_and_are_removed(page: Page) -> None:
     assert "wind-electricity · flow" in json.dumps(page.cards[0], ensure_ascii=False)
 
 
+def test_removing_the_last_card_raises_no_error(page: Page) -> None:
+    page.add("bhkw-electricity/flow")
+    page.click("remove", 0)
+
+    # The removed card's controls were the last ones matching the edit callback's inputs.
+    response = fire(page.app, {"chart-field": [], "chart-colour": []}, {"charts-store.data": page.charts}, changed=[])
+
+    assert response == {}
+
+
 def test_more_than_eight_webgl_charts_show_warning(adlershof_app: Dash) -> None:
     charts = [{"id": str(index), "kind": "sequences", "type": "line"} for index in range(9)]
 
@@ -465,6 +533,13 @@ def test_rendering_a_card_does_not_count_as_editing_it(page: Page) -> None:
     )
 
     assert response == {}
+
+
+def test_rerendered_colour_field_updates_nothing(page: Page) -> None:
+    page.add("bhkw-electricity/flow")
+
+    # A card update re-renders its colour fields, which fire the edit callbacks with their unchanged values.
+    assert page.colour(0, "bhkw-electricity/flow", "") == set()
 
 
 def test_dropping_a_series_drops_its_colour_override(page: Page) -> None:
@@ -558,15 +633,11 @@ def test_inspector_shows_results_without_outcomes_for_node(two_results: tuple) -
     assert "r2: no Outcomes" not in text
 
 
-NO_SELECTED_NODE = {"graph.selectedNodeData": None}
-
-
-def inspect_inputs(datapackage_name: str | None, tapped: str | None = None) -> dict[str, object]:
-    """Inspector callback inputs before the Result Selection: a tapped node, no link clicks, a Datapackage."""
+def inspect_inputs(datapackage_name: str | None, selected: str | None = None) -> dict[str, object]:
+    """Inspector callback inputs before the Result Selection: the node selected in the graph, if any, and a
+    Datapackage."""
     return {
-        "graph.tapNode": {"data": {"id": tapped}} if tapped else None,
-        "node-link": [],
-        "chart-chip": [],
+        "graph.selectedNodeData": [{"id": selected}] if selected else None,
         "datapackage.value": datapackage_name,
     }
 
@@ -578,7 +649,7 @@ def test_inspector_summary_lists_unmatched_and_warns_on_low_match_ratio(shipped_
     app = create_app(shipped_data / "datapackages", tmp_path)
 
     inputs = inspect_inputs("adlershof") | {"result-selection.value": ["mixed"]}
-    text = rendered(fire(app, inputs, NO_SELECTED_NODE, changed=["result-selection.value"])["inspector"]["children"])
+    text = rendered(fire(app, inputs, changed=["result-selection.value"])["inspector"]["children"])
 
     assert "Datapackage likely doesn't belong to this Result" in text
     assert "mixed: 2 unmatched" in text
@@ -587,17 +658,15 @@ def test_inspector_summary_lists_unmatched_and_warns_on_low_match_ratio(shipped_
 
 def test_inspector_summary_without_banner_when_result_matches(adlershof_app: Dash) -> None:
     inputs = inspect_inputs("adlershof") | {"result-selection.value": ["adlershof"]}
-    text = rendered(
-        fire(adlershof_app, inputs, NO_SELECTED_NODE, changed=["result-selection.value"])["inspector"]["children"]
-    )
+    text = rendered(fire(adlershof_app, inputs, changed=["result-selection.value"])["inspector"]["children"])
 
     assert "doesn't belong" not in text
     assert "adlershof: 0 unmatched" in text
 
 
 def test_tapping_node_shows_its_outcomes(adlershof_app: Dash) -> None:
-    inputs = inspect_inputs("adlershof", tapped="bhkw") | {"result-selection.value": ["adlershof"]}
-    text = rendered(fire(adlershof_app, inputs, NO_SELECTED_NODE, changed=["graph.tapNode"])["inspector"]["children"])
+    inputs = inspect_inputs("adlershof", selected="bhkw") | {"result-selection.value": ["adlershof"]}
+    text = rendered(fire(adlershof_app, inputs, changed=["graph.selectedNodeData"])["inspector"]["children"])
 
     assert "bhkw-electricity · flow" in text
     assert "in 1/1 Results" in text
@@ -610,8 +679,8 @@ def test_tapping_node_shows_its_outcomes(adlershof_app: Dash) -> None:
 def test_inspector_offers_add_chart_for_numeric_parameters_and_input_sequences(
     adlershof_app: Dash, node: str, offered: str, not_offered: str | None
 ) -> None:
-    inputs = inspect_inputs("adlershof", tapped=node) | {"result-selection.value": ["adlershof"]}
-    text = rendered(fire(adlershof_app, inputs, NO_SELECTED_NODE, changed=["graph.tapNode"])["inspector"]["children"])
+    inputs = inspect_inputs("adlershof", selected=node) | {"result-selection.value": ["adlershof"]}
+    text = rendered(fire(adlershof_app, inputs, changed=["graph.selectedNodeData"])["inspector"]["children"])
 
     assert json.dumps({"type": "outcome-chart", "outcome": offered}) in text
     assert not_offered is None or not_offered not in text
@@ -653,19 +722,6 @@ def test_rendering_add_chart_buttons_adds_no_chart(page: Page) -> None:
     assert response == {}
 
 
-@pytest.mark.parametrize(("clicks", "shown"), [(1, True), (None, False)])
-def test_clicking_a_chart_chip_inspects_its_node(adlershof_app: Dash, clicks: int | None, shown: bool) -> None:
-    chip = {"type": "chart-chip", "chart": "c1", "node": "bhkw"}
-    inputs = inspect_inputs("adlershof") | {
-        "chart-chip": [{"id": chip, "property": "n_clicks", "value": clicks}],
-        "result-selection.value": ["adlershof"],
-    }
-
-    response = fire(adlershof_app, inputs, NO_SELECTED_NODE, changed=[f"{pattern(chip)}.n_clicks"])
-
-    assert ("bhkw-electricity · flow" in rendered(response)) is shown
-
-
 def test_chart_card_shows_chips_of_its_nodes(page: Page) -> None:
     page.add("bhkw-electricity/flow")
 
@@ -677,12 +733,21 @@ def test_chart_card_shows_chips_of_its_nodes(page: Page) -> None:
 
 
 def test_inspector_keeps_selected_node_when_result_selection_changes(adlershof_app: Dash) -> None:
-    inputs = inspect_inputs("adlershof") | {"result-selection.value": ["adlershof"]}
-    states = {"graph.selectedNodeData": [{"id": "bhkw"}]}
+    inputs = inspect_inputs("adlershof", selected="bhkw") | {"result-selection.value": ["adlershof"]}
 
-    text = rendered(fire(adlershof_app, inputs, states, changed=["result-selection.value"])["inspector"]["children"])
+    text = rendered(fire(adlershof_app, inputs, changed=["result-selection.value"])["inspector"]["children"])
 
     assert "bhkw-electricity · flow" in text
+
+
+@pytest.mark.parametrize("selected", [[], [{"id": "gone"}]])
+def test_deselecting_in_graph_returns_inspector_to_overview(adlershof_app: Dash, selected: list) -> None:
+    # Tapping empty space empties the selection; a node of another Datapackage counts as none.
+    inputs = inspect_inputs("adlershof") | {"graph.selectedNodeData": selected, "result-selection.value": ["adlershof"]}
+
+    text = rendered(fire(adlershof_app, inputs, changed=["graph.selectedNodeData"])["inspector"]["children"])
+
+    assert "adlershof: 85 Result Entries" in text
 
 
 @pytest.mark.parametrize(
@@ -934,6 +999,23 @@ def test_rendering_add_bus_balance_buttons_adds_no_chart(page: Page) -> None:
     }
 
     response = fire(page.app, inputs, {"sankey-bus.value": None, **page.states()}, [f"{pattern(button)}.n_clicks"])
+
+    assert response == {}
+
+
+@pytest.mark.parametrize(
+    ("inputs", "states"),
+    [
+        (
+            {"add-sankey.n_clicks": None, "add-bus-balance.n_clicks": None, "bus-balance": []},
+            {"sankey-bus.value": None},
+        ),
+        ({"add-chart.n_clicks": None, "outcome-chart": []}, {"outcome-picker.value": ["bhkw-electricity/flow"]}),
+    ],
+)
+def test_switching_the_inspector_away_from_add_buttons_adds_no_chart(page: Page, inputs: dict, states: dict) -> None:
+    # E.g. clicking a Connection in a Bus's inspector replaces the inspector and its "Add Bus balance" button.
+    response = fire(page.app, inputs, states | page.states(), changed=[])
 
     assert response == {}
 
