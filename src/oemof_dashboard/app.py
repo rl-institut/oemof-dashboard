@@ -31,17 +31,23 @@ from oemof_dashboard.matching import Matching, match
 from oemof_dashboard.result import Result, read, scalar_outcomes, sequence_outcomes
 
 MIN_MATCH_RATIO = 0.5  # below it, the selected Datapackage likely belongs to another Result
+ACCENT_COLOUR = "#2563eb"
+# Cytoscape rounds the zoom up to a power of 2 before applying "min-zoomed-font-size", so Component labels
+# (8 px, at least 10 px zoomed) show above zoom 1 only.
+MIN_READABLE_ZOOM = 1.25
 GRAPH_STYLESHEET = [
     {"selector": "node", "style": {"label": "data(id)", "font-size": 8, "width": 12, "height": 12}},
-    {"selector": ".component", "style": {"background-color": "#8a9bb0"}},
+    {"selector": ".component", "style": {"background-color": "#8a9bb0", "min-zoomed-font-size": 10}},
     {
         "selector": ".bus",
         "style": {
             "shape": "round-rectangle",
             "background-color": "#d9822b",
-            "width": 30,
-            "height": 18,
-            "font-size": 11,
+            "width": 40,
+            "height": 24,
+            "font-size": 12,
+            "font-weight": "bold",
+            "z-index": 10,  # Bus labels on top of Component labels
         },
     },
     {"selector": "edge", "style": {"width": 1, "line-color": "#bbb"}},
@@ -52,15 +58,28 @@ GRAPH_STYLESHEET = [
             "target-arrow-shape": "triangle",
             "target-arrow-color": "#888",
             "line-color": "#888",
-            "label": "data(label)",
             "font-size": 7,
             "text-rotation": "autorotate",
         },
     },
     {
         "selector": ".foreign",
-        "style": {"line-color": "#e34948", "target-arrow-color": "#e34948", "line-style": "dashed"},
+        "style": {
+            "line-color": "#e34948",
+            "target-arrow-color": "#e34948",
+            "line-style": "dashed",
+            "label": "data(label)",
+        },
     },
+    # "neighbour" and "connected" are set on selection by a clientside callback; nothing is faded.
+    {"selector": ".neighbour", "style": {"border-width": 2, "border-color": ACCENT_COLOUR}},
+    {
+        "selector": "node:selected",
+        "style": {"border-width": 4, "border-color": ACCENT_COLOUR, "width": 18, "height": 18},
+    },
+    {"selector": ".bus:selected", "style": {"width": 48, "height": 30}},
+    {"selector": ".connected", "style": {"width": 3, "line-color": ACCENT_COLOUR, "target-arrow-color": ACCENT_COLOUR}},
+    {"selector": ".flow.connected", "style": {"label": "data(label)"}},
 ]
 
 
@@ -487,6 +506,7 @@ def create_app(datapackages: Path, results: Path) -> Dash:
     Returns:
         Dash app; call `run` to serve it.
     """
+    cyto.load_extra_layouts()  # for "cose-bilkent"
     app = Dash(__name__, title="oemof Dashboard")
 
     def layout() -> html.Div:
@@ -535,13 +555,19 @@ def create_app(datapackages: Path, results: Path) -> Dash:
                     children=[
                         html.Div(
                             className="graph-pane",
-                            children=cyto.Cytoscape(
-                                id="graph",
-                                elements=[],
-                                layout={"name": "cose"},
-                                stylesheet=GRAPH_STYLESHEET,
-                                style={"width": "100%", "height": "100%"},
-                            ),
+                            children=[
+                                cyto.Cytoscape(
+                                    id="graph",
+                                    elements=[],
+                                    layout={"name": "cose-bilkent", "randomize": False},  # same input, same layout
+                                    stylesheet=GRAPH_STYLESHEET,
+                                    minZoom=0.2,
+                                    maxZoom=3,
+                                    wheelSensitivity=0.2,
+                                    style={"width": "100%", "height": "100%"},
+                                ),
+                                html.Button("Fit", id="graph-fit", className="graph-fit"),
+                            ],
                         ),
                         html.Div(id="dashboard-notice"),
                         html.Div(id="webgl-warning"),
@@ -702,9 +728,31 @@ def create_app(datapackages: Path, results: Path) -> Dash:
             if (node.empty()) return;  // not in the graph: keep the selection
             cy.$(":selected").unselect();
             node.select();
-        }""",
+            // Graph taps don't pass here, so a tapped node doesn't jump away.
+            cy.animate({center: {eles: node}, zoom: Math.max(cy.zoom(), MIN_READABLE_ZOOM)}, {duration: 400});
+        }""".replace("MIN_READABLE_ZOOM", str(MIN_READABLE_ZOOM)),
         Input({"type": "node-link", "node": ALL}, "n_clicks"),
         Input({"type": "chart-chip", "chart": ALL, "node": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+
+    # Cytoscape has no selector for a selected node's neighbourhood, so mark it with classes for the stylesheet.
+    app.clientside_callback(
+        """(_selected, _elements) => {
+            const cy = document.getElementById("graph")?._cyreg?.cy;
+            if (!cy) return;
+            cy.elements().removeClass("neighbour connected");
+            const selected = cy.nodes(":selected");
+            selected.neighborhood("node").addClass("neighbour");
+            selected.connectedEdges().addClass("connected");
+        }""",
+        Input("graph", "selectedNodeData"),
+        Input("graph", "elements"),  # new elements reset their classes
+    )
+
+    app.clientside_callback(
+        """(_clicks) => { document.getElementById("graph")?._cyreg?.cy?.fit(); }""",
+        Input("graph-fit", "n_clicks"),
         prevent_initial_call=True,
     )
 
