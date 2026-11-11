@@ -1,7 +1,7 @@
 """Pure figure builders: Outcomes × Result Selection → plotly figure plus notices. No Dash imports."""
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Literal, NotRequired, TypedDict
 
 import numpy as np
@@ -31,7 +31,7 @@ MAX_TITLE_SERIES = 3
 # Browsers cap live WebGL contexts (~8–16); beyond that charts go blank.
 WEBGL_TYPES = {"line", "duration_curve"}
 MAX_WEBGL_CHARTS = 8
-# Prefix of an Input Sequence's series key; Outcome keys are "<Result Entry>/<variable>".
+# Prefix of an Input Sequence's or Input Scalar's series key; Outcome keys are "<Result Entry>/<variable>".
 INPUT_PREFIX = "input:"
 # Sankey colour of a Flow without a Bus end, or a Component without a Connection.
 NO_BUS_COLOUR = "#8a9bb0"
@@ -40,13 +40,26 @@ SANKEY_GAP = 0.02  # paper width between side-by-side Sankeys
 # A Bus balance draws its residual only beyond this share of its largest Flow value: solvers leave rounding noise.
 RESIDUAL_TOLERANCE = 1e-6
 RESIDUAL_COLOUR = "#1f1f1f"
+# A chart holding both Input Sequences or Input Scalars and Outcomes draws them on their own y-axis (Datapackage
+# left, Result right) and lists them in their own legend; the legends move right of the right axis' tick labels.
+# ponytail: fixed legend spots; they overlap on a short card with many series, upgrade to measured spots if needed
+LEGENDS = {
+    "legend": {"title": {"text": "Datapackage"}, "x": 1.08},
+    "legend2": {"title": {"text": "Result"}, "x": 1.08, "y": 0, "yanchor": "bottom"},
+}
+MIXED_LAYOUT = {
+    "yaxis": {"title": {"text": "Datapackage"}},
+    "yaxis2": {"title": {"text": "Result"}, "side": "right", "overlaying": "y"},
+    **LEGENDS,
+}
 
 
 class Chart(TypedDict):
     """Chart config as kept in the charts store (JSON).
 
-    `series` holds Outcomes as [Result Entry, variable] and, in sequence charts only, Input Sequences as
-    [Datapackage, resource, column]; system charts have none but a `bus` instead: an optional filter of a Sankey,
+    `series` holds Outcomes as [Result Entry, variable], and Input Sequences as
+    [Datapackage, resource, column] in sequence charts, Input Scalars as [Datapackage, Component, Parameter] in bar
+    charts; system charts have none but a `bus` instead: an optional filter of a Sankey,
     the balanced Bus of a Bus balance; `colours` maps a series key (see `series_key`) to a hex colour overriding the
     palette; `title` None means auto.
     """
@@ -65,10 +78,11 @@ def series_key(item: list[str] | tuple[str, ...]) -> str:
     """Key of a series item, as used for dropdown values and colour overrides.
 
     Args:
-        item: Outcome as [Result Entry, variable] or Input Sequence as [Datapackage, resource, column].
+        item: Outcome as [Result Entry, variable], Input Sequence as [Datapackage, resource, column] or Input Scalar
+            as [Datapackage, Component, Parameter].
 
     Returns:
-        "<Result Entry>/<variable>" or "input:<Datapackage>/<resource>/<column>".
+        "<Result Entry>/<variable>", or "input:" and the Datapackage value's parts joined by "/".
     """
     return INPUT_PREFIX + "/".join(item) if len(item) == 3 else "/".join(item)
 
@@ -80,9 +94,10 @@ def series_item(key: str) -> list[str]:
         key: Series key.
 
     Returns:
-        [Result Entry, variable] or [Datapackage, resource, column].
+        [Result Entry, variable], [Datapackage, resource, column] or [Datapackage, Component, Parameter].
     """
     # Result Entry, Datapackage and resource names come from file and folder names, so they never contain "/".
+    # ponytail: a Component name with "/" (a CSV value) splits wrong; escape "/" in `series_key` if one shows up.
     if key.startswith(INPUT_PREFIX):
         return key.removeprefix(INPUT_PREFIX).split("/", 2)
     return key.split("/", 1)
@@ -123,7 +138,7 @@ def auto_title(chart: Chart) -> str:
 def chart_figure(
     chart: Chart,
     results: dict[str, Result],
-    inputs: dict[tuple[str, str, str], pd.Series] | None = None,
+    inputs: dict[tuple[str, str, str], pd.Series | float] | None = None,
     package: Datapackage | None = None,
 ) -> tuple[go.Figure, list[str]]:
     """Build the figure of one chart for the Result Selection.
@@ -131,7 +146,7 @@ def chart_figure(
     Args:
         chart: Chart config.
         results: Result Selection as Result name → Result.
-        inputs: Loaded Input Sequences by (Datapackage, resource, column); series not in it show as missing.
+        inputs: Loaded Input Sequences and Input Scalars by their series item; series not in it show as missing.
         package: Selected Datapackage, needed by system charts; None if none is selected.
 
     Returns:
@@ -150,7 +165,7 @@ def chart_figure(
     elif chart["type"] == "bus_balance":
         figure, notices = bus_balance(results, package, chart.get("bus"))
     elif chart["type"] == "bar":
-        figure, notices = bar_chart(series, results, chart["colours"])
+        figure, notices = bar_chart(series, results, chart["colours"], inputs)
     else:
         builder = {"line": line_chart, "stacked_area": stacked_area, "duration_curve": duration_curve}[chart["type"]]
         figure, notices = builder(series, results, chart["colours"], inputs)
@@ -189,7 +204,7 @@ def _traces(
     series: list[tuple[str, ...]],
     results: dict[str, Result],
     colours: dict[str, str] | None,
-    inputs: dict[tuple[str, str, str], pd.Series] | None,
+    inputs: dict[tuple[str, str, str], pd.Series | float] | None,
 ) -> Iterator[tuple[str, int | None, str, pd.Series | None]]:
     # (colour, Result index, trace name, data or None if missing) per Outcome × Result and once per Input Sequence
     # (Result index None), in series order.
@@ -208,7 +223,7 @@ def line_chart(
     series: list[tuple[str, ...]],
     results: dict[str, Result],
     colours: dict[str, str] | None = None,
-    inputs: dict[tuple[str, str, str], pd.Series] | None = None,
+    inputs: dict[tuple[str, str, str], pd.Series | float] | None = None,
 ) -> tuple[go.Figure, list[str]]:
     """Build a line chart of Result Sequences for every Result in the Result Selection, plus Input Sequences.
 
@@ -220,7 +235,7 @@ def line_chart(
         inputs: Loaded Input Sequences by (Datapackage, resource, column).
 
     Returns:
-        Figure with one `Scattergl` trace per Outcome × Result and one solid trace per Input Sequence on a shared
+        Figure with one `Scattergl` trace per Outcome × Result and one solid step line per Input Sequence on a shared
         datetime x-axis; a series missing from a Result or from `inputs` is a legend entry suffixed "(missing)"
         without data. Notices to show with it.
     """
@@ -231,7 +246,7 @@ def duration_curve(
     series: list[tuple[str, ...]],
     results: dict[str, Result],
     colours: dict[str, str] | None = None,
-    inputs: dict[tuple[str, str, str], pd.Series] | None = None,
+    inputs: dict[tuple[str, str, str], pd.Series | float] | None = None,
 ) -> tuple[go.Figure, list[str]]:
     """Build duration curves of Result Sequences for every Result in the Result Selection, plus Input Sequences.
 
@@ -248,21 +263,36 @@ def duration_curve(
     return _dashed_chart(series, results, colours, inputs, duration=True)
 
 
+def _mixed(result_indices: Iterable[int | None]) -> bool:
+    # Whether a chart holds both Input Sequences or Input Scalars (no Result index) and Outcomes.
+    return len({index is None for index in result_indices}) == 2
+
+
+def _input_shape(result_index: int | None) -> dict[str, str]:
+    # Input Sequences (no Result index) are step lines, telling them apart from Result Sequences.
+    return {"shape": "hv"} if result_index is None else {}
+
+
 def _dashed_chart(
     series: list[tuple[str, ...]],
     results: dict[str, Result],
     colours: dict[str, str] | None,
-    inputs: dict[tuple[str, str, str], pd.Series] | None,
+    inputs: dict[tuple[str, str, str], pd.Series | float] | None,
     duration: bool,
 ) -> tuple[go.Figure, list[str]]:
-    # Line chart or duration curve: the Result is encoded by dash style, Input Sequences are solid.
+    # Line chart or duration curve: the Result is encoded by dash style, Input Sequences are solid step lines.
     xaxis = {"title": {"text": "hours (rank)"}} if duration else {"type": "date"}
     figure = go.Figure(layout={"xaxis": xaxis, "margin": {"l": 40, "r": 10, "t": 10, "b": 30}})
-    for colour, result_index, name, column in _traces(series, results, colours, inputs):
-        line = {"color": colour, "dash": DASHES[(result_index or 0) % len(DASHES)]}
+    traces = list(_traces(series, results, colours, inputs))
+    mixed = _mixed(result_index for _, result_index, _, _ in traces)
+    for colour, result_index, name, column in traces:
+        line = {"color": colour, "dash": DASHES[(result_index or 0) % len(DASHES)]} | _input_shape(result_index)
+        axis = {"yaxis": "y2", "legend": "legend2"} if mixed and result_index is not None else {}
         if column is None:
             figure.add_trace(
-                go.Scattergl(x=[None], y=[None], name=f"{name} (missing)", mode="lines", line=line, showlegend=True)
+                go.Scattergl(
+                    x=[None], y=[None], name=f"{name} (missing)", mode="lines", line=line, showlegend=True, **axis
+                )
             )
             continue
         if duration:
@@ -270,7 +300,9 @@ def _dashed_chart(
             x = np.arange(len(values))
         else:
             values, x = column.to_numpy(), column.index
-        figure.add_trace(go.Scattergl(x=x, y=values, name=name, mode="lines", line=line))
+        figure.add_trace(go.Scattergl(x=x, y=values, name=name, mode="lines", line=line, **axis))
+    if mixed:
+        figure.update_layout(**MIXED_LAYOUT)
     notices = []
     if len(results) > MAX_DISTINCT_RESULTS:
         notices.append(f"More than {MAX_DISTINCT_RESULTS} Results: dash styles get hard to tell apart.")
@@ -281,7 +313,7 @@ def stacked_area(
     series: list[tuple[str, ...]],
     results: dict[str, Result],
     colours: dict[str, str] | None = None,
-    inputs: dict[tuple[str, str, str], pd.Series] | None = None,
+    inputs: dict[tuple[str, str, str], pd.Series | float] | None = None,
 ) -> tuple[go.Figure, list[str]]:
     """Build a stacked area chart of Result Sequences with one subplot per Result in the Result Selection.
 
@@ -293,55 +325,93 @@ def stacked_area(
 
     Returns:
         Figure with one stacked `Scatter` trace per Outcome × Result; subplots share both axes and are titled
-        with the Result. Input Sequences are drawn unstacked over every subplot with one legend entry. A missing
-        series is a legend entry suffixed "(missing)". No notices.
+        with the Result. Input Sequences are drawn unstacked over every subplot with one legend entry. Holding
+        both, each subplot draws Input Sequences on its left axis and Outcomes on its right axis. A missing series
+        is a legend entry suffixed "(missing)". No notices.
     """
     rows = max(len(results), 1)
-    figure = make_subplots(rows=rows, cols=1, shared_xaxes=True, subplot_titles=list(results))
-    figure.update_yaxes(matches="y")
+    traces = list(_traces(series, results, colours, inputs))
+    mixed = _mixed(result_index for _, result_index, _, _ in traces)
+    specs = [[{"secondary_y": mixed}]] * rows
+    figure = make_subplots(rows=rows, cols=1, shared_xaxes=True, subplot_titles=list(results), specs=specs)
+    if mixed:
+        figure.update_yaxes(matches="y", title_text="Datapackage", secondary_y=False)
+        figure.update_yaxes(matches="y2", title_text="Result", secondary_y=True)
+        figure.update_layout(**LEGENDS)
+    else:
+        figure.update_yaxes(matches="y")
     figure.update_layout(margin={"l": 40, "r": 10, "t": 10, "b": 30})
-    for colour, result_index, name, column in _traces(series, results, colours, inputs):
-        line = {"color": colour}
+    for colour, result_index, name, column in traces:
+        line = {"color": colour} | _input_shape(result_index)
+        right = mixed and result_index is not None
         if column is None:
             trace = go.Scatter(x=[None], y=[None], name=f"{name} (missing)", mode="lines", line=line, showlegend=True)
-            figure.add_trace(trace, row=(result_index or 0) + 1, col=1)
+            figure.add_trace(
+                trace.update(legend="legend2") if right else trace,
+                row=(result_index or 0) + 1,
+                col=1,
+                secondary_y=right,
+            )
             continue
         data = {"x": column.index, "y": column.to_numpy(), "name": name, "mode": "lines", "line": line}
         if result_index is None:  # Input Sequence: unstacked over every subplot, one legend entry
             for row in range(1, rows + 1):
                 figure.add_trace(go.Scatter(**data, legendgroup=name, showlegend=row == 1), row=row, col=1)
         else:
-            figure.add_trace(go.Scatter(**data, stackgroup=str(result_index + 1)), row=result_index + 1, col=1)
+            trace = go.Scatter(**data, stackgroup=str(result_index + 1), legend="legend2" if right else None)
+            figure.add_trace(trace, row=result_index + 1, col=1, secondary_y=right)
     return figure, []
 
 
 def bar_chart(
-    series: list[tuple[str, ...]], results: dict[str, Result], colours: dict[str, str] | None = None
+    series: list[tuple[str, ...]],
+    results: dict[str, Result],
+    colours: dict[str, str] | None = None,
+    inputs: dict[tuple[str, str, str], pd.Series | float] | None = None,
 ) -> tuple[go.Figure, list[str]]:
-    """Build a grouped bar chart of Result Scalars across the Result Selection.
+    """Build a grouped bar chart of Result Scalars across the Result Selection, plus Input Scalars.
 
     Args:
-        series: Outcomes as (Result Entry, variable), in palette and bar order within a group.
+        series: Outcomes as (Result Entry, variable) and Input Scalars as (Datapackage, Component, Parameter), in
+            palette and bar order within a group.
         results: Result Selection as Result name → Result, one group of bars each, left to right.
         colours: Hex colours by series key, overriding the palette for those series.
+        inputs: Loaded Input Scalars by (Datapackage, Component, Parameter).
 
     Returns:
         Figure with one `Bar` trace per Outcome over the Results; an Outcome missing from a Result has no bar there
-        and a legend entry "<Outcome> · <Result> (missing)" instead. No notices.
+        and a legend entry "<Outcome> · <Result> (missing)" instead. Input Scalars are hatched bars in one group per
+        Datapackage left of the Results, or a legend entry "<Input Scalar> (missing)" if not in `inputs`. Holding
+        both, Input Scalars are drawn on the left axis and Outcomes on the right axis. No notices.
     """
     # Category axis: Result names such as "2045" would otherwise make a numeric axis.
-    layout = {"barmode": "group", "xaxis": {"type": "category"}, "margin": {"l": 40, "r": 10, "t": 10, "b": 30}}
+    packages = list(dict.fromkeys(item[0] for item in series if len(item) == 3 and item in (inputs or {})))
+    xaxis = {"type": "category", "categoryorder": "array", "categoryarray": [*packages, *results]}
+    layout = {"barmode": "group", "xaxis": xaxis, "margin": {"l": 40, "r": 10, "t": 10, "b": 30}}
     figure = go.Figure(layout=layout)
+    mixed = _mixed(None if len(item) == 3 else 0 for item in series)
     for index, item in enumerate(series):
-        entry, variable = item
         label = series_label(item)
-        style = {"marker": {"color": _colour(index, item, colours)}, "legendgroup": label}
+        colour = _colour(index, item, colours)
+        if len(item) == 3:
+            style = {"marker": {"color": colour, "pattern": {"shape": "/"}}, "legendgroup": label}
+            value = (inputs or {}).get(item)
+            if value is None:
+                figure.add_trace(go.Bar(x=[None], y=[None], name=f"{label} (missing)", showlegend=True, **style))
+            else:
+                figure.add_trace(go.Bar(x=[item[0]], y=[value], name=label, **style))
+            continue
+        entry, variable = item
+        style = {"marker": {"color": colour}, "legendgroup": label}
+        style |= {"yaxis": "y2", "legend": "legend2"} if mixed else {}
         values = {
             name: result.entries.get(entry, ResultEntry()).scalars.get(variable) for name, result in results.items()
         }
         figure.add_trace(go.Bar(x=list(values), y=list(values.values()), name=label, **style))
         for name in (name for name, value in values.items() if value is None):
             figure.add_trace(go.Bar(x=[None], y=[None], name=f"{label} · {name} (missing)", showlegend=True, **style))
+    if mixed:
+        figure.update_layout(**MIXED_LAYOUT)
     return figure, []
 
 

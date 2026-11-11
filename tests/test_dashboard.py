@@ -37,7 +37,7 @@ CHARTS = [
         "kind": "scalars",
         "type": "bar",
         "title": None,
-        "series": [["bhkw-electricity", "invest"]],
+        "series": [["bhkw-electricity", "invest"], ["adlershof", "bhkw", "capacity"]],
         "colours": {},
         "width": "half",
     },
@@ -111,7 +111,7 @@ def test_bad_file_is_refused_with_reason(text: str, reason: str) -> None:
     "chart",
     [
         CHARTS[0] | {"type": "bar"},  # type of another kind
-        CHARTS[3] | {"series": [["adlershof", "volatile_profile", "wind-profile"]]},  # Input Sequence in a bar chart
+        CHARTS[3] | {"series": [["adlershof", "bhkw", "capacity", "extra"]]},
         CHARTS[0] | {"series": [["only-entry"]]},
         CHARTS[0] | {"colours": {"bhkw-electricity/flow": "red"}},
         CHARTS[5] | {"bus": None},  # a Bus balance needs its Bus

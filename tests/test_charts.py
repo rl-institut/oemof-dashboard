@@ -220,6 +220,83 @@ def test_input_sequence_appears_once_in_palette_order_next_to_outcomes(adlershof
     ]
 
 
+@pytest.mark.parametrize("chart_type", ["line", "stacked_area", "duration_curve"])
+def test_input_sequence_is_a_step_line_result_sequences_are_not(adlershof: Result, chart_type: str) -> None:
+    series = [list(BHKW_FLOW), list(HEAT_DEMAND)]
+
+    figure, _ = chart_figure(chart(type=chart_type, series=series), {"base": adlershof}, {HEAT_DEMAND: HEAT_PROFILE})
+
+    assert [(trace.name, trace.line.shape) for trace in figure.data] == [
+        ("bhkw-electricity · flow · base", None),
+        ("adlershof · demands_profile · heat_central-residential", "hv"),
+    ]
+
+
+@pytest.mark.parametrize("chart_type", ["line", "duration_curve"])
+def test_datapackage_and_result_values_get_their_own_titled_axis(adlershof: Result, chart_type: str) -> None:
+    series = [list(BHKW_FLOW), list(HEAT_DEMAND)]
+
+    figure, _ = chart_figure(chart(type=chart_type, series=series), {"base": adlershof}, {HEAT_DEMAND: HEAT_PROFILE})
+
+    assert [trace.yaxis or "y" for trace in figure.data] == ["y2", "y"]
+    assert (figure.layout.yaxis.title.text, figure.layout.yaxis.side) == ("Datapackage", None)
+    assert (figure.layout.yaxis2.title.text, figure.layout.yaxis2.side, figure.layout.yaxis2.overlaying) == (
+        "Result",
+        "right",
+        "y",
+    )
+
+
+@pytest.mark.parametrize("chart_type", ["line", "stacked_area", "duration_curve"])
+def test_legend_is_split_into_datapackage_and_result_sections(adlershof: Result, chart_type: str) -> None:
+    series = [list(BHKW_FLOW), list(HEAT_DEMAND)]
+
+    figure, _ = chart_figure(chart(type=chart_type, series=series), {"base": adlershof}, {HEAT_DEMAND: HEAT_PROFILE})
+
+    assert [(trace.name, trace.legend or "legend") for trace in figure.data] == [
+        ("bhkw-electricity · flow · base", "legend2"),
+        ("adlershof · demands_profile · heat_central-residential", "legend"),
+    ]
+    assert (figure.layout.legend.title.text, figure.layout.legend2.title.text) == ("Datapackage", "Result")
+
+
+def test_stacked_area_splits_axes_per_subplot_and_keeps_results_comparable(adlershof: Result) -> None:
+    series = [list(BHKW_FLOW), list(HEAT_DEMAND)]
+
+    figure, _ = chart_figure(
+        chart(type="stacked_area", series=series),
+        {"base": adlershof, "variant": adlershof},
+        {HEAT_DEMAND: HEAT_PROFILE},
+    )
+
+    def axis_of(trace: go.Scatter) -> go.layout.YAxis:
+        return figure.layout["yaxis" + (trace.yaxis or "y").removeprefix("y")]
+
+    titles = [(trace.name, axis_of(trace).title.text, axis_of(trace).side) for trace in figure.data]
+    assert titles == [
+        ("bhkw-electricity · flow · base", "Result", "right"),
+        ("bhkw-electricity · flow · variant", "Result", "right"),
+        ("adlershof · demands_profile · heat_central-residential", "Datapackage", None),
+        ("adlershof · demands_profile · heat_central-residential", "Datapackage", None),
+    ]
+    base, variant = (axis_of(trace) for trace in figure.data[:2])
+    assert base.matches == variant.matches is not None  # Result axes still shared across subplots
+
+
+@pytest.mark.parametrize("chart_type", ["line", "stacked_area", "duration_curve"])
+@pytest.mark.parametrize("item", [BHKW_FLOW, HEAT_DEMAND])
+def test_chart_of_one_kind_keeps_one_untitled_axis(adlershof: Result, chart_type: str, item: tuple) -> None:
+    figure, _ = chart_figure(
+        chart(type=chart_type, series=[list(item)]), {"base": adlershof}, {HEAT_DEMAND: HEAT_PROFILE}
+    )
+
+    assert {trace.yaxis or "y" for trace in figure.data} == {"y"}
+    assert figure.layout.yaxis.title.text is None
+    assert "yaxis2" not in figure.to_dict()["layout"]
+    assert {trace.legend or "legend" for trace in figure.data} == {"legend"}
+    assert figure.layout.legend.title.text is None
+
+
 def test_input_sequence_duration_curve_drops_nan() -> None:
     figure, _ = chart_figure(chart(type="duration_curve", series=[list(HEAT_DEMAND)]), {}, {HEAT_DEMAND: HEAT_PROFILE})
 
@@ -324,6 +401,62 @@ def test_colour_override_applies_to_bar_outcome_only() -> None:
     )
 
     assert [trace.marker.color for trace in figure.data] == ["#2a78d6", "#123456"]
+
+
+PV_CAPACITY = ("adlershof", "pv", "capacity")
+
+
+def test_input_scalar_is_one_hatched_bar_left_of_the_results_on_its_own_axis_and_legend() -> None:
+    results = {"base": scalars_result(invest=3.0), "variant": scalars_result(invest=4.0)}
+
+    figure, _ = chart_figure(bar(series=[list(PV_INVEST), list(PV_CAPACITY)]), results, {PV_CAPACITY: 10.0})
+
+    invest, capacity = figure.data
+    assert (list(invest.x), list(invest.y), invest.yaxis, invest.legend) == (
+        ["base", "variant"],
+        [3.0, 4.0],
+        "y2",
+        "legend2",
+    )
+    assert (capacity.name, list(capacity.x), list(capacity.y), capacity.marker.color) == (
+        "adlershof · pv · capacity",
+        ["adlershof"],
+        [10.0],
+        "#eb6834",
+    )
+    assert capacity.marker.pattern.shape == "/"
+    assert invest.marker.pattern.shape is None
+    assert (capacity.yaxis or "y", capacity.legend or "legend") == ("y", "legend")
+    assert list(figure.layout.xaxis.categoryarray) == ["adlershof", "base", "variant"]
+    assert (figure.layout.yaxis.title.text, figure.layout.yaxis2.title.text) == ("Datapackage", "Result")
+    assert (figure.layout.legend.title.text, figure.layout.legend2.title.text) == ("Datapackage", "Result")
+
+
+def test_input_scalar_not_loaded_is_hatched_legend_entry_without_bar() -> None:
+    figure, _ = chart_figure(bar(series=[list(PV_CAPACITY)]), {"base": scalars_result()}, {})
+
+    (missing,) = figure.data
+    assert missing.name == "adlershof · pv · capacity (missing)"
+    assert missing.showlegend is True
+    assert missing.marker.pattern.shape == "/"
+    assert all(value is None for value in missing.y)
+    assert "yaxis2" not in figure.to_dict()["layout"]
+
+
+def test_input_scalar_of_datapackage_without_loaded_values_gets_no_category() -> None:
+    figure, _ = chart_figure(bar(series=[list(PV_INVEST), list(PV_CAPACITY)]), {"base": scalars_result(invest=3.0)}, {})
+
+    assert list(figure.layout.xaxis.categoryarray) == ["base"]
+
+
+@pytest.mark.parametrize(("series", "inputs"), [([PV_INVEST], {}), ([PV_CAPACITY], {PV_CAPACITY: 10.0})])
+def test_bar_chart_of_one_kind_keeps_one_untitled_axis_and_legend(series: list, inputs: dict) -> None:
+    figure, _ = chart_figure(bar(series=[list(item) for item in series]), {"base": scalars_result(invest=3.0)}, inputs)
+
+    assert {trace.yaxis or "y" for trace in figure.data} == {"y"}
+    assert {trace.legend or "legend" for trace in figure.data} == {"legend"}
+    assert figure.layout.yaxis.title.text is None
+    assert "yaxis2" not in figure.to_dict()["layout"]
 
 
 def test_bar_is_the_only_type_of_scalar_kind() -> None:

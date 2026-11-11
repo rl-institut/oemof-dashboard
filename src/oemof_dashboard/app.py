@@ -1,6 +1,7 @@
 """Dash layout and callbacks of the Explorer."""
 
 import base64
+import math
 import uuid
 from collections import Counter
 from pathlib import Path
@@ -121,6 +122,28 @@ def input_sequence_items(
     }
 
 
+def input_scalar_items(
+    name: str, package: datapackage.Datapackage, nodes: set[str] | None = None
+) -> set[tuple[str, str, str]]:
+    """Input Scalars of a Datapackage: its Components' finite numeric Parameters; NaN and inf can't be drawn.
+
+    Args:
+        name: Name of the Datapackage.
+        package: The Datapackage.
+        nodes: Only Input Scalars of these Components; all if None.
+
+    Returns:
+        Input Scalars as (Datapackage, Component, Parameter).
+    """
+    return {
+        (name, component.name, parameter)
+        for component in package.components.values()
+        if nodes is None or component.name in nodes
+        for parameter, value in component.parameters.items()
+        if isinstance(value, float) and math.isfinite(value)
+    }
+
+
 def input_option(name: str, parsed: datapackage.Datapackage | Result | datapackage.Refused) -> dict:
     """Selector option for a Datapackage or Result: Refused input marked ✖ with the reason as tooltip and not
     selectable, input with Input Warnings marked ⚠ n.
@@ -197,7 +220,7 @@ def outcome_rows(package: datapackage.Datapackage, name: str, results: dict[str,
             [
                 html.Td(f"{entry} · {variable}"),
                 html.Td(f"in {count}/{len(results)} Results"),
-                html.Td(html.Button("+ chart", id={"type": "outcome-chart", "outcome": f"{entry}/{variable}"})),
+                html.Td(add_series_button((entry, variable))),
             ]
         )
         for (entry, variable), count in sorted(counts.items())
@@ -205,14 +228,28 @@ def outcome_rows(package: datapackage.Datapackage, name: str, results: dict[str,
     return [html.Table(rows), *without]
 
 
-def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Result]) -> list:
+def add_series_button(item: tuple[str, ...]) -> html.Button:
+    """Button adding a series as a new chart of its kind.
+
+    Args:
+        item: Outcome as (Result Entry, variable), Input Scalar as (Datapackage, Component, Parameter) or Input
+            Sequence as (Datapackage, resource, column).
+
+    Returns:
+        "+ chart" button whose id carries the series key.
+    """
+    return html.Button("+ chart", id={"type": "outcome-chart", "outcome": series_key(item)})
+
+
+def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Result], package_name: str) -> list:
     """Inspector content for one Bus or Component: type/resource, Connections, Parameters, Input Sequences, and
-    its Outcomes in the Result Selection.
+    its Outcomes in the Result Selection; Input Scalars and unbroken Input Sequences each with "+ chart".
 
     Args:
         package: Datapackage holding the node.
         name: Bus or Component name.
         results: Result Selection as Result name → Result.
+        package_name: Name of the Datapackage.
 
     Returns:
         Dash children for the inspector pane.
@@ -223,6 +260,7 @@ def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Re
     ]
     scalars = {key: value for key, value in node.parameters.items() if not isinstance(value, datapackage.InputSequence)}
     sequences = {key: value for key, value in node.parameters.items() if isinstance(value, datapackage.InputSequence)}
+    input_scalars = input_scalar_items(package_name, package, {name})
     return [
         html.H4(name),
         html.Div(f"type: {node.type} · resource: {node.resource}"),
@@ -230,11 +268,33 @@ def inspector(package: datapackage.Datapackage, name: str, results: dict[str, Re
         html.Label("Connections"),
         html.Div([node_link(neighbour) for neighbour in neighbours] or "–"),
         html.Label("Parameters"),
-        html.Table([html.Tr([html.Td(key), html.Td(str(value).removesuffix(".0"))]) for key, value in scalars.items()]),
+        html.Table(
+            [
+                html.Tr(
+                    [
+                        html.Td(key),
+                        html.Td(str(value).removesuffix(".0")),
+                        html.Td(
+                            add_series_button((package_name, name, key))
+                            if (package_name, name, key) in input_scalars
+                            else []
+                        ),
+                    ]
+                )
+                for key, value in scalars.items()
+            ]
+        ),
         html.Label("Input Sequences"),
         html.Ul(
             [
-                html.Li(f"{key}: {ref.resource} × {ref.column}" + (" (broken: column missing)" if ref.broken else ""))
+                html.Li(
+                    [
+                        f"{key}: {ref.resource} × {ref.column}",
+                        " (broken: column missing)"
+                        if ref.broken
+                        else add_series_button((package_name, ref.resource, ref.column)),
+                    ]
+                )
                 for key, ref in sequences.items()
             ]
         ),
@@ -246,7 +306,7 @@ def chart_card(
     chart: Chart,
     results: dict[str, Result],
     input_items: set[tuple[str, str, str]],
-    inputs: dict[tuple[str, str, str], pd.Series],
+    inputs: dict[tuple[str, str, str], pd.Series | float],
     package: datapackage.Datapackage | None,
 ) -> html.Div:
     """Chart card: controls for title, type, width, order and removal; series multi-select and colour overrides, or
@@ -255,8 +315,10 @@ def chart_card(
     Args:
         chart: Chart config.
         results: Result Selection as Result name → Result.
-        input_items: Input Sequences of the selected Datapackage, offered as series of sequence charts.
-        inputs: Loaded Input Sequences of the chart by (Datapackage, resource, column).
+        input_items: Input Sequences (sequence charts) or Input Scalars (bar charts) of the selected Datapackage,
+            offered as series.
+        inputs: Loaded Input Sequences and Input Scalars by (Datapackage, resource or Component, column or
+            Parameter).
         package: Selected Datapackage, offering its Buses as filter of system charts; None if none is selected.
 
     Returns:
@@ -268,8 +330,7 @@ def chart_card(
         offered = {series_key(item) for result in results.values() for item in scalar_outcomes(result)}
     else:
         offered = {series_key(item) for result in results.values() for item in sequence_outcomes(result)}
-        offered |= {series_key(item) for item in input_items}
-    offered |= set(picked)
+    offered |= {series_key(item) for item in input_items} | set(picked)
     options = [{"label": series_label(series_item(key)), "value": key} for key in sorted(offered)]
     figure, notices = chart_figure(chart, results, inputs, package)
 
@@ -475,15 +536,22 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         ]
 
     def chart_cards(charts: list[Chart], selection: list[str] | None, name: str | None) -> list[html.Div]:
-        # Only Input Sequences referenced (unbroken) in the selected Datapackage are loaded; any other, e.g. of
-        # another Datapackage, shows as missing.
+        # Only Input Sequences referenced (unbroken) in, and Input Scalars of, the selected Datapackage are loaded;
+        # any other, e.g. of another Datapackage, shows as missing.
         selected = read_selection(selection)
         package = read_package(name)
-        input_items = input_sequence_items(name, package) if package else set()
-        wanted = {tuple(item) for chart in charts for item in chart["series"] if tuple(item) in input_items}
+        sequence_items = input_sequence_items(name, package) if package else set()
+        scalar_items = input_scalar_items(name, package) if package else set()
+        wanted = {tuple(item) for chart in charts for item in chart["series"] if tuple(item) in sequence_items}
         loaded = {item: datapackage.input_sequence(datapackages / name, *item[1:]) for item in wanted}
-        inputs = {item: values for item, values in loaded.items() if values is not None}
-        return [chart_card(chart, selected, input_items, inputs, package) for chart in charts]
+        inputs: dict[tuple[str, str, str], pd.Series | float] = {
+            item: values for item, values in loaded.items() if values is not None
+        }
+        inputs |= {item: package.components[item[1]].parameters[item[2]] for item in scalar_items}
+        return [
+            chart_card(chart, selected, scalar_items if chart["kind"] == "scalars" else sequence_items, inputs, package)
+            for chart in charts
+        ]
 
     def selected_node_names(name: str | None, selected_nodes: list[dict] | None) -> set[str]:
         # Cytoscape may keep a selection from the previous Datapackage; drop names it doesn't have.
@@ -514,7 +582,11 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         outcomes = set().union(*map(sequence_outcomes, selected.values()), *map(scalar_outcomes, selected.values()))
         nodes = selected_node_names(name, selected_nodes)
         package = read_package(name)
-        inputs = input_sequence_items(name, package, nodes or None) if package else set()
+        inputs = (
+            (input_sequence_items(name, package, nodes or None) | input_scalar_items(name, package, nodes or None))
+            if package
+            else set()
+        )
         if nodes:
             entries = set().union(*(match(result, package).entries_of(nodes) for result in selected.values()))
             outcomes = {(entry, variable) for entry, variable in outcomes if entry in entries}
@@ -545,12 +617,12 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         package = read_package(name)
         selected = read_selection(selection)
         if package and link_clicked:
-            return inspector(package, ctx.triggered_id["node"], selected)
+            return inspector(package, ctx.triggered_id["node"], selected, name)
         if package and ctx.triggered_id == "graph":
-            return inspector(package, tapped["data"]["id"], selected)
+            return inspector(package, tapped["data"]["id"], selected, name)
         kept = selected_node_names(name, selected_nodes)
         if kept and ctx.triggered_id == "result-selection":
-            return inspector(package, min(kept), selected)
+            return inspector(package, min(kept), selected, name)
         # Nothing selected: summarise the inputs.
         summary = refusal_banners(name, selection)
         summary += warning_list(f"Datapackage {name}", package.warnings) if package else []
@@ -627,10 +699,13 @@ def create_app(datapackages: Path, results: Path) -> Dash:
         if not picked:
             raise PreventUpdate
         # Sequence and scalar items never mix in one chart: a mixed pick adds one chart per kind.
-        # ponytail: an Outcome counts as scalar if it is a Result Scalar in any selected Result
+        # ponytail: an Outcome counts as scalar if it is a Result Scalar in any selected Result; an Input Scalar if
+        # it is one of the selected Datapackage, whose key would win over an Input Sequence spelled the same.
         scalars = {
             series_key(item) for result in read_selection(selection).values() for item in scalar_outcomes(result)
         }
+        package = read_package(name)
+        scalars |= {series_key(item) for item in input_scalar_items(name, package)} if package else set()
         by_kind = {
             "sequences": [value for value in picked if value not in scalars],
             "scalars": [value for value in picked if value in scalars],

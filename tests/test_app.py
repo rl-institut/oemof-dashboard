@@ -14,10 +14,11 @@ from dash import Dash
 from plotly.utils import PlotlyJSONEncoder
 
 from oemof_dashboard import datapackage
-from oemof_dashboard.app import create_app, graph_elements, inspector
+from oemof_dashboard.app import create_app, graph_elements, input_scalar_items, inspector
 from oemof_dashboard.result import Result, read
 
 WIND_PROFILE = "input:adlershof/volatile_profile/wind-profile"
+BHKW_EFFICIENCY = "input:adlershof/bhkw/electric_efficiency"
 EXPLORER_IDS = [
     "datapackage",
     "result-selection",
@@ -539,7 +540,7 @@ def two_results() -> tuple[datapackage.Datapackage, dict[str, Result]]:
 def test_inspector_lists_outcomes_per_entry_and_variable_with_add_chart(two_results: tuple) -> None:
     package, results = two_results
 
-    text = rendered(inspector(package, "pv", results))
+    text = rendered(inspector(package, "pv", results, "dp"))
 
     assert "pv-el · flow" in text
     assert "pv-el · invest" in text
@@ -551,7 +552,7 @@ def test_inspector_lists_outcomes_per_entry_and_variable_with_add_chart(two_resu
 def test_inspector_shows_results_without_outcomes_for_node(two_results: tuple) -> None:
     package, results = two_results
 
-    text = rendered(inspector(package, "wind", results))
+    text = rendered(inspector(package, "wind", results, "dp"))
 
     assert "r1: no Outcomes in this Result" in text
     assert "r2: no Outcomes" not in text
@@ -600,6 +601,20 @@ def test_tapping_node_shows_its_outcomes(adlershof_app: Dash) -> None:
 
     assert "bhkw-electricity · flow" in text
     assert "in 1/1 Results" in text
+
+
+@pytest.mark.parametrize(
+    ("node", "offered", "not_offered"),
+    [("bhkw", BHKW_EFFICIENCY, "input:adlershof/bhkw/expandable"), ("wind", WIND_PROFILE, None)],
+)
+def test_inspector_offers_add_chart_for_numeric_parameters_and_input_sequences(
+    adlershof_app: Dash, node: str, offered: str, not_offered: str | None
+) -> None:
+    inputs = inspect_inputs("adlershof", tapped=node) | {"result-selection.value": ["adlershof"]}
+    text = rendered(fire(adlershof_app, inputs, NO_SELECTED_NODE, changed=["graph.tapNode"])["inspector"]["children"])
+
+    assert json.dumps({"type": "outcome-chart", "outcome": offered}) in text
+    assert not_offered is None or not_offered not in text
 
 
 @pytest.mark.parametrize(
@@ -738,6 +753,38 @@ def test_outcome_picker_offers_result_scalars(adlershof_app: Dash) -> None:
     assert {"label": "bhkw-electricity · invest", "value": "bhkw-electricity/invest"} in options
 
 
+@pytest.mark.parametrize(
+    ("selected", "bhkw_listed"), [(None, True), ([{"id": "bhkw"}], True), ([{"id": "wind"}], False)]
+)
+def test_outcome_picker_offers_numeric_input_scalars_of_datapackage_and_selected_nodes(
+    adlershof_app: Dash, selected: list | None, bhkw_listed: bool
+) -> None:
+    inputs = {
+        "result-selection.value": ["adlershof"],
+        "datapackage.value": "adlershof",
+        "graph.selectedNodeData": selected,
+    }
+
+    options = fire(adlershof_app, inputs)["outcome-picker"]["options"]
+
+    by_value = {option["value"]: option["label"] for option in options}
+    assert (by_value.get(BHKW_EFFICIENCY) == "adlershof · bhkw · electric_efficiency") is bhkw_listed
+    assert "input:adlershof/bhkw/expandable" not in by_value  # text Parameter
+
+
+def test_input_scalars_are_finite_numeric_parameters_of_components() -> None:
+    package = package_of(["el"], [("pv", "el")])
+    package.buses["el"].parameters = {"balanced": 1.0}
+    package.components["pv"].parameters = {
+        "capacity": 5.0,
+        "potential": float("inf"),
+        "cost": float("nan"),
+        "tech": "pv",
+    }
+
+    assert input_scalar_items("dp", package) == {("dp", "pv", "capacity")}
+
+
 def test_added_scalar_outcome_is_a_bar_chart_offering_result_scalars_only(page: Page) -> None:
     page.add("bhkw-electricity/invest")
 
@@ -759,6 +806,35 @@ def test_mixed_pick_adds_one_chart_per_kind(page: Page) -> None:
         ("scalars", [["bhkw-electricity", "invest"], ["bhkw-electricity", "total"]]),
     ]
     assert len(page.cards) == 2
+
+
+def test_input_scalar_is_added_to_a_bar_chart_and_drawn_next_to_result_scalars(page: Page) -> None:
+    page.add("bhkw-electricity/invest", BHKW_EFFICIENCY, WIND_PROFILE)
+
+    assert [(chart["kind"], chart["series"]) for chart in page.charts] == [
+        ("sequences", [["adlershof", "volatile_profile", "wind-profile"]]),
+        ("scalars", [["bhkw-electricity", "invest"], ["adlershof", "bhkw", "electric_efficiency"]]),
+    ]
+    card = json.dumps(page.cards[1], ensure_ascii=False)
+    assert '"name": "adlershof · bhkw · electric_efficiency"' in card
+    assert "0.38" in card
+    assert "(missing)" not in card
+    assert "input:adlershof/bhkw/capacity_cost" in card  # another Input Scalar offered
+    assert WIND_PROFILE not in card  # an Input Sequence
+
+
+@pytest.mark.parametrize("other", [None, "copy"])
+def test_input_scalar_of_another_datapackage_is_missing(shipped_data: Path, tmp_path: Path, other: str | None) -> None:
+    (tmp_path / "datapackages").mkdir()
+    for name in ("adlershof", "copy"):  # same content, different Datapackage
+        (tmp_path / "datapackages" / name).symlink_to(shipped_data / "datapackages" / "adlershof")
+    page = Page(create_app(tmp_path / "datapackages", shipped_data / "results"))
+    page.add(BHKW_EFFICIENCY)
+
+    page.datapackage = other
+    page.rerender()
+
+    assert "adlershof · bhkw · electric_efficiency (missing)" in json.dumps(page.cards, ensure_ascii=False)
 
 
 def test_inspector_add_chart_button_adds_bar_chart_for_scalar(page: Page) -> None:
@@ -835,8 +911,8 @@ def test_sankey_without_datapackage_shows_notice(page: Page) -> None:
 def test_inspector_of_a_bus_offers_add_bus_balance(two_results: tuple) -> None:
     package, results = two_results
 
-    assert json.dumps({"type": "bus-balance", "bus": "el"}) in rendered(inspector(package, "el", results))
-    assert '"bus-balance"' not in rendered(inspector(package, "pv", results))
+    assert json.dumps({"type": "bus-balance", "bus": "el"}) in rendered(inspector(package, "el", results, "dp"))
+    assert '"bus-balance"' not in rendered(inspector(package, "pv", results, "dp"))
 
 
 def test_add_bus_balance_in_inspector_adds_a_bus_balance_of_that_bus(page: Page) -> None:

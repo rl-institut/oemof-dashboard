@@ -41,6 +41,10 @@ An attribute of a Component in the Datapackage, either a scalar value or a refer
 A timeseries in the Datapackage, referenced by a Component Parameter (e.g. profiles, efficiencies).
 _Avoid_: profile (only one kind of Input Sequence)
 
+**Input Scalar**:
+A Component Parameter with a numeric scalar value (e.g. capacity, capacity_cost), addressed as Datapackage × Component × Parameter. Text-valued Parameters are not Input Scalars.
+_Avoid_: input element, element
+
 **Result Entry**:
 A named item of a Result holding Result Scalars and/or Result Sequences; resolves to a Flow or a node only when matched against a Datapackage.
 _Avoid_: stem, file

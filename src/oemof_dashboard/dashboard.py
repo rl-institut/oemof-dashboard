@@ -10,8 +10,8 @@ from oemof_dashboard.charts import CHART_TYPES, HEX_COLOUR, Chart
 
 VERSION = 1
 # Series item lengths a chart kind can draw: Outcomes (2) everywhere but in system charts, Input Sequences (3) in
-# sequence charts only.
-SERIES_LENGTHS = {"sequences": (2, 3), "scalars": (2,), "system": ()}
+# sequence charts and Input Scalars (3) in bar charts.
+SERIES_LENGTHS = {"sequences": (2, 3), "scalars": (2, 3), "system": ()}
 
 
 class DashboardChart(BaseModel):
